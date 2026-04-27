@@ -563,11 +563,20 @@ function PuzzleBoardInner() {
   const [showCritical,      setShowCritical]      = useState(false);
   const [sprintOpen,        setSprintOpen]        = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
+  const [expandedPieces,    setExpandedPieces]    = useState<Set<string>>(new Set());
 
   const toggleCollapse = useCallback((projectId: string) => {
     setCollapsedProjects(prev => {
       const next = new Set(prev);
       next.has(projectId) ? next.delete(projectId) : next.add(projectId);
+      return next;
+    });
+  }, []);
+
+  const toggleExpand = useCallback((pieceId: string) => {
+    setExpandedPieces(prev => {
+      const next = new Set(prev);
+      next.has(pieceId) ? next.delete(pieceId) : next.add(pieceId);
       return next;
     });
   }, []);
@@ -642,6 +651,15 @@ function PuzzleBoardInner() {
     const isBNMode     = viewModeRef.current === 'bottleneck';
     const impactScales = computeImpactScales(pieces);
 
+    // ── 階層: parent_id ベースの child マップ構築 ────────────────────────
+    const childMap: Record<string, string[]> = {};
+    for (const p of pieces) {
+      if (p.parent_id) {
+        if (!childMap[p.parent_id]) childMap[p.parent_id] = [];
+        childMap[p.parent_id].push(p.id);
+      }
+    }
+
     // ── 折りたたみ分離: collapsed vs visible ──────────────────────────────
     const collapsedByProject: Record<string, Piece[]> = {};
     for (const p of pieces) {
@@ -650,8 +668,10 @@ function PuzzleBoardInner() {
         collapsedByProject[p.project_id].push(p);
       }
     }
+    // 子ピースは親が展開されているときのみ表示
     const visiblePieces = pieces.filter(p =>
-      !p.project_id || !collapsedProjects.has(p.project_id)
+      (!p.project_id || !collapsedProjects.has(p.project_id)) &&
+      (!p.parent_id  || expandedPieces.has(p.parent_id))
     );
     // collapsed piece ID → summary node ID のマップ
     const pieceToSummary: Record<string, string> = {};
@@ -670,11 +690,29 @@ function PuzzleBoardInner() {
     const newNodes: Node[] = visiblePieces.map(piece => {
       const isBottleneck = isBNMode && (staleIds.has(piece.id) || overloadIds.has(piece.id));
       const isBlocked    = blockedIds.has(piece.id);
-      const pos = layoutMode === 'force'
-        ? autoPos[piece.id] ?? { x: 60, y: 60 }
-        : manualPositions.current[piece.id] ?? autoPos[piece.id] ?? { x: 60, y: 60 };
+
+      // 子ピースは親の下に整列、手動ドラッグも尊重
+      let pos: { x: number; y: number };
+      if (piece.parent_id && expandedPieces.has(piece.parent_id)) {
+        const parentPos = manualPositions.current[piece.parent_id]
+          ?? autoPos[piece.parent_id]
+          ?? { x: 400, y: 300 };
+        const siblings  = childMap[piece.parent_id] ?? [];
+        const idx       = siblings.indexOf(piece.id);
+        const n         = siblings.length;
+        pos = manualPositions.current[piece.id] ?? {
+          x: parentPos.x + (idx - (n - 1) / 2) * (PIECE_NODE_W + 60),
+          y: parentPos.y + PIECE_NODE_H + 90,
+        };
+      } else {
+        pos = layoutMode === 'force'
+          ? autoPos[piece.id] ?? { x: 60, y: 60 }
+          : manualPositions.current[piece.id] ?? autoPos[piece.id] ?? { x: 60, y: 60 };
+      }
+
       const project      = piece.project_id ? projectMap[piece.project_id] : undefined;
       const assigneeName = piece.assignee_id ? workerMap[piece.assignee_id]?.name : undefined;
+      const thisChildren = childMap[piece.id] ?? [];
 
       const matchesStatus  = !filterStatus  || piece.status === filterStatus;
       const matchesProject = !filterProject || piece.project_id === filterProject;
@@ -689,10 +727,27 @@ function PuzzleBoardInner() {
           assigneeName,
           impactScale: impactScales[piece.id] ?? 1,
           isDimmed: filterDimmed, isHighlighted: false,
+          // 階層
+          childCount:      thisChildren.length,
+          isExpanded:      expandedPieces.has(piece.id),
+          onToggleExpand:  () => toggleExpand(piece.id),
+          isChild:         !!piece.parent_id,
         },
         style: filterDimmed ? { pointerEvents: 'none' as const } : undefined,
       };
     });
+
+    // ── 親子リンクエッジ（ツリー構造の視覚的接続）──────────────────────────
+    const parentChildEdges: Edge[] = visiblePieces
+      .filter(p => p.parent_id && visiblePieces.some(v => v.id === p.parent_id))
+      .map(p => ({
+        id:     `pc-${p.parent_id}-${p.id}`,
+        source: p.parent_id!,
+        target: p.id,
+        type:   'smoothstep',
+        style:  { stroke: '#94a3b8', strokeWidth: 1.5, strokeDasharray: '4 3', opacity: 0.5 },
+        markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8', width: 12, height: 12 },
+      }));
 
     // ── Summary nodes (collapsed projects) ───────────────────────────────
     const summaryNodes: Node[] = Object.entries(collapsedByProject).map(([projId, ps2]) => {
@@ -752,10 +807,11 @@ function PuzzleBoardInner() {
     }
 
     setNodes([...islandNodes, ...newNodes, ...summaryNodes]);
-    setEdges(newEdges);
+    setEdges([...newEdges, ...parentChildEdges]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pieces, connections, viewMode, layoutMode, bottlenecks, projectMap, workerMap,
-      filterStatus, filterProject, filterSearch, showIslands, showCritical, collapsedProjects, toggleCollapse]);
+      filterStatus, filterProject, filterSearch, showIslands, showCritical,
+      collapsedProjects, toggleCollapse, expandedPieces, toggleExpand]);
 
   // ── Effect 2: ホバー/エッジ選択 → data のみ更新（位置に触れない）──────────
   useEffect(() => {
@@ -1404,6 +1460,7 @@ function PuzzleBoardInner() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         onCreated={() => { refresh(); push('ピースを追加しました', 'success'); }}
+        allPieces={pieces}
       />
       <PieceDetailPanel
         piece={selectedPiece}
