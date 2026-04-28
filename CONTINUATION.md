@@ -78,6 +78,19 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
   - 選択ピースに対してAI割り当て提案を取得→`assignMap`に反映
 - **api.ts**: `ai.suggestSprint()` 追加
 
+### Phase F — サマリーカード改善 ✅ 完了
+- **ProjectSummaryNode** ホバーポップアップ
+  - 担当者アバター一覧（進行中/着手可/ロック/完了の内訳）
+  - 「→ 着手可（N件）」「✓ 全完了（N件）」一括変更ボタン
+- **SummaryData** に `workerMap`, `onBulkReady`, `onBulkDone` を追加
+- コミット: `8e2efba`
+
+### Phase G — PieceDetailPanel 親子関係UI ✅ 完了
+- `allPieces?: Piece[]` prop 追加 → `parent_id` でフィルタして子一覧表示
+- ステータスドットをクリックで個別サイクル（locked→ready→in_progress→done）
+- 「全→着手可」「全完了」一括変更ボタン＋進捗ミニバー
+- コミット: `8e2efba`
+
 ---
 
 ## 🔲 次にやること（優先順）
@@ -85,14 +98,6 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
 ### E. リアルタイム複数人カーソル
 - WebSocketで他ユーザーのカーソル位置を共有
 - Figmaスタイルのカラー付きカーソルとアバター
-
-### F. サマリーカードの改善
-- ホバーでポップアップ詳細（担当者アバター・ブロック状況）
-- サマリーカードから直接ステータス一括変更
-
-### G. PieceDetailPanel 親子関係UI
-- 詳細パネルで子ピース一覧を表示
-- 子ピースのステータスを一括変更
 
 ### H. ボードパフォーマンス改善
 - 75ピース以上での描画最適化（仮想化・LOD）
