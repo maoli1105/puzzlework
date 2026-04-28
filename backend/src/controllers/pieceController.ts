@@ -127,6 +127,7 @@ export async function updateStatus(req: AuthRequest, res: Response) {
 
 export async function updatePiece(req: AuthRequest, res: Response) {
   const { id } = req.params;
+  const userId = req.user!.id;
   const { project_id, due_date, start_date, title, objective, value_metric, expected_impact, priority, skill_tags } = req.body;
 
   const setClauses: string[] = [];
@@ -146,12 +147,38 @@ export async function updatePiece(req: AuthRequest, res: Response) {
 
   if (setClauses.length === 0) { res.status(400).json({ error: 'Nothing to update' }); return; }
 
+  // 変更ログ用に現在値を取得
+  const { rows: [before] } = await pool.query(
+    'SELECT title, objective, value_metric, expected_impact, skill_tags FROM pieces WHERE id = $1',
+    [id]
+  );
+
   params.push(id);
   const { rows: [piece] } = await pool.query(
     `UPDATE pieces SET ${setClauses.join(', ')} WHERE id = $${params.length} RETURNING *`,
     params
   );
   if (!piece) { res.status(404).json({ error: 'Not found' }); return; }
+
+  // テキストフィールドが変わった場合だけログを書く
+  const LOG_FIELDS: { key: string; label: string }[] = [
+    { key: 'title',           label: 'タイトル' },
+    { key: 'objective',       label: '目的' },
+    { key: 'value_metric',    label: '評価指標' },
+    { key: 'expected_impact', label: '期待成果' },
+    { key: 'skill_tags',      label: 'スキルタグ' },
+  ];
+  for (const f of LOG_FIELDS) {
+    if (!(f.key in req.body)) continue;
+    const oldVal = before ? String(before[f.key] ?? '') : '';
+    const newVal = f.key === 'skill_tags'
+      ? (skill_tags as string[] | undefined)?.join(', ') ?? ''
+      : String(req.body[f.key] ?? '');
+    if (oldVal !== newVal) {
+      await logPieceEvent(id, userId, `field_updated:${f.label}`, oldVal || null, newVal || null);
+    }
+  }
+
   res.json(piece);
 }
 

@@ -155,6 +155,24 @@ router.patch('/:id/reorder', requireAdmin, async (req, res) => {
 });
 
 router.get('/:id', getPiece);
+
+// ピース別変更履歴
+router.get('/:id/logs', authenticate, async (req, res) => {
+  const { id } = req.params;
+  const limit = Math.min(parseInt(req.query.limit as string) || 30, 100);
+  const { rows } = await pool.query(
+    `SELECT pl.id, pl.event_type, pl.old_value, pl.new_value, pl.created_at,
+            u.name as user_name
+     FROM piece_logs pl
+     LEFT JOIN users u ON u.id = pl.user_id
+     WHERE pl.piece_id = $1
+     ORDER BY pl.created_at DESC
+     LIMIT $2`,
+    [id, limit]
+  );
+  res.json(rows);
+});
+
 router.patch('/:id', requireAdmin, updatePiece);
 router.patch('/:id/status', updateStatus);
 router.patch('/:id/assign', requireAdmin, assignPiece);

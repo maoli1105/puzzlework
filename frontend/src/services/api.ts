@@ -101,6 +101,11 @@ export const pieces = {
     }),
   reorder: (id: string, before_order?: number, after_order?: number) =>
     api.patch(`/pieces/${id}/reorder`, { before_order, after_order }).then((r) => r.data),
+  getLogs: (id: string, limit?: number) =>
+    api.get(`/pieces/${id}/logs`, { params: { limit } }).then((r) => r.data as {
+      id: string; event_type: string; old_value: string | null;
+      new_value: string | null; created_at: string; user_name: string | null;
+    }[]),
 };
 
 export const ai = {

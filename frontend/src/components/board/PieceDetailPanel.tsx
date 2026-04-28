@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Piece, PieceStatus, Project } from '../../types';
 import { pieces as pieceApi, users as userApi, projects as projectApi } from '../../services/api';
-import { X, Sparkles, Clock, MessageCircle } from 'lucide-react';
+import { X, Sparkles, Clock, MessageCircle, History, Pencil, Check } from 'lucide-react';
 
 interface Worker { id: string; name: string; active_pieces: number; }
 interface SuggestedWorker { id: string; name: string; score: number; active_pieces: number; avg_days: number | null; skill_match_count: number; }
@@ -144,9 +144,12 @@ export default function PieceDetailPanel({ piece, onClose, onUpdated, allPieces 
                   <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-3)', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 5 }}>
                     ピース詳細
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)', lineHeight: 1.35, letterSpacing: '-0.01em' }}>
-                    {piece.title}
-                  </div>
+                  <InlineTextEdit
+                    value={piece.title}
+                    onSave={async (v) => { await pieceApi.update(piece.id, { title: v }); onUpdated(); }}
+                    multiline={false}
+                    textStyle={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)', lineHeight: 1.35, letterSpacing: '-0.01em' }}
+                  />
                 </div>
                 <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', display: 'flex', alignItems: 'center', padding: 4, flexShrink: 0 }}>
                   <X size={14} />
@@ -171,13 +174,35 @@ export default function PieceDetailPanel({ piece, onClose, onUpdated, allPieces 
             {/* Body */}
             <div style={{ flex: 1, padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: 14 }}>
 
-              {/* 詳細情報 */}
+              {/* 詳細情報（インライン編集対応） */}
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-                {piece.objective       && <DetailRow label="目的"     value={piece.objective} />}
-                {piece.value_metric    && <DetailRow label="評価指標" value={piece.value_metric} />}
-                {piece.expected_impact && <DetailRow label="期待成果" value={piece.expected_impact} />}
+                <InlineEditRow
+                  label="目的"
+                  value={piece.objective ?? ''}
+                  placeholder="目的を入力..."
+                  onSave={async (v) => { await pieceApi.update(piece.id, { objective: v }); onUpdated(); }}
+                  multiline
+                />
+                <InlineEditRow
+                  label="評価指標"
+                  value={piece.value_metric ?? ''}
+                  placeholder="評価指標を入力..."
+                  onSave={async (v) => { await pieceApi.update(piece.id, { value_metric: v }); onUpdated(); }}
+                  multiline
+                />
+                <InlineEditRow
+                  label="期待成果"
+                  value={piece.expected_impact ?? ''}
+                  placeholder="期待成果を入力..."
+                  onSave={async (v) => { await pieceApi.update(piece.id, { expected_impact: v }); onUpdated(); }}
+                  multiline
+                />
+                <InlineTagsEdit
+                  label="スキルタグ"
+                  tags={piece.skill_tags}
+                  onSave={async (tags) => { await pieceApi.update(piece.id, { skill_tags: tags }); onUpdated(); }}
+                />
                 <DetailRow label="優先度" value={`P${piece.priority}`} />
-                {piece.skill_tags.length > 0 && <DetailRow label="スキルタグ" value={piece.skill_tags.join(', ')} />}
                 {piece.started_at   && <DetailRow label="開始日時" value={new Date(piece.started_at).toLocaleString('ja-JP')} />}
                 {piece.completed_at && <DetailRow label="完了日時" value={new Date(piece.completed_at).toLocaleString('ja-JP')} />}
               </div>
@@ -385,9 +410,9 @@ export default function PieceDetailPanel({ piece, onClose, onUpdated, allPieces 
 }
 
 function PanelTabs({ pieceId }: { pieceId: string }) {
-  const [tab, setTab] = useState<'comments' | 'timelog'>('comments');
+  const [tab, setTab] = useState<'comments' | 'timelog' | 'history'>('comments');
   const tabStyle = (active: boolean): React.CSSProperties => ({
-    display: 'flex', alignItems: 'center', gap: 4, padding: '5px 12px', fontSize: 11, fontWeight: active ? 700 : 400,
+    display: 'flex', alignItems: 'center', gap: 4, padding: '5px 10px', fontSize: 11, fontWeight: active ? 700 : 400,
     color: active ? 'var(--accent)' : 'var(--text-3)', background: 'none', border: 'none',
     borderBottom: active ? '2px solid var(--accent)' : '2px solid transparent',
     cursor: 'pointer', marginBottom: -1,
@@ -401,8 +426,13 @@ function PanelTabs({ pieceId }: { pieceId: string }) {
         <button style={tabStyle(tab === 'timelog')} onClick={() => setTab('timelog')}>
           <Clock size={11} /> 時間記録
         </button>
+        <button style={tabStyle(tab === 'history')} onClick={() => setTab('history')}>
+          <History size={11} /> 変更履歴
+        </button>
       </div>
-      {tab === 'comments' ? <CommentsSection pieceId={pieceId} /> : <TimeLogSection pieceId={pieceId} />}
+      {tab === 'comments' && <CommentsSection pieceId={pieceId} />}
+      {tab === 'timelog'  && <TimeLogSection  pieceId={pieceId} />}
+      {tab === 'history'  && <HistorySection  pieceId={pieceId} />}
     </div>
   );
 }
@@ -667,6 +697,307 @@ function ChildTaskSection({
         </div>
       </div>
     </>
+  );
+}
+
+// ── InlineTextEdit ─────────────────────────────────────────────────────────
+// クリックで editing モード、blur/Enter で保存
+function InlineTextEdit({
+  value, onSave, multiline = false, textStyle = {},
+}: {
+  value: string;
+  onSave: (v: string) => Promise<void>;
+  multiline?: boolean;
+  textStyle?: React.CSSProperties;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft,   setDraft]   = useState(value);
+  const [saving,  setSaving]  = useState(false);
+  const inputRef = useRef<HTMLInputElement & HTMLTextAreaElement>(null);
+
+  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { if (editing) inputRef.current?.focus(); }, [editing]);
+
+  async function commit() {
+    if (draft.trim() === value) { setEditing(false); return; }
+    setSaving(true);
+    try { await onSave(draft.trim()); } finally { setSaving(false); setEditing(false); }
+  }
+
+  if (!editing) {
+    return (
+      <div
+        onClick={() => setEditing(true)}
+        title="クリックして編集"
+        style={{
+          ...textStyle,
+          cursor: 'text',
+          minHeight: 20,
+          borderRadius: 4,
+          padding: '1px 4px',
+          marginLeft: -4,
+          transition: 'background 0.12s',
+          color: value ? textStyle.color : 'var(--text-3)',
+        }}
+        onMouseEnter={e => (e.currentTarget.style.background = 'var(--surface-sub)')}
+        onMouseLeave={e => (e.currentTarget.style.background = 'transparent')}
+      >
+        {value || <span style={{ opacity: 0.4, fontStyle: 'italic' }}>クリックして編集</span>}
+      </div>
+    );
+  }
+
+  const sharedStyle: React.CSSProperties = {
+    ...textStyle,
+    width: '100%', boxSizing: 'border-box',
+    border: '1px solid var(--accent)',
+    borderRadius: 6, padding: '3px 6px',
+    background: 'var(--bg)',
+    outline: 'none', resize: 'vertical',
+    opacity: saving ? 0.6 : 1,
+  };
+
+  return multiline ? (
+    <textarea
+      ref={inputRef as React.Ref<HTMLTextAreaElement>}
+      value={draft}
+      rows={3}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => { if (e.key === 'Escape') { setEditing(false); setDraft(value); } }}
+      style={sharedStyle}
+    />
+  ) : (
+    <input
+      ref={inputRef as React.Ref<HTMLInputElement>}
+      value={draft}
+      onChange={e => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={e => {
+        if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { setEditing(false); setDraft(value); }
+      }}
+      style={sharedStyle}
+    />
+  );
+}
+
+// ── InlineEditRow ───────────────────────────────────────────────────────────
+function InlineEditRow({
+  label, value, placeholder, onSave, multiline = false,
+}: {
+  label: string; value: string; placeholder?: string;
+  onSave: (v: string) => Promise<void>; multiline?: boolean;
+}) {
+  return (
+    <div>
+      <div style={{
+        fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
+        textTransform: 'uppercase', letterSpacing: '0.06em',
+        marginBottom: 3, display: 'flex', alignItems: 'center', gap: 4,
+      }}>
+        {label}
+        <Pencil size={8} style={{ opacity: 0.4 }} />
+      </div>
+      <InlineTextEdit
+        value={value}
+        onSave={onSave}
+        multiline={multiline}
+        textStyle={{ fontSize: 12, color: value ? 'var(--text-1)' : 'var(--text-3)', lineHeight: 1.5 }}
+      />
+      {!value && placeholder && (
+        <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 1, fontStyle: 'italic' }}>{placeholder}</div>
+      )}
+    </div>
+  );
+}
+
+// ── InlineTagsEdit ──────────────────────────────────────────────────────────
+function InlineTagsEdit({
+  label, tags, onSave,
+}: {
+  label: string; tags: string[]; onSave: (tags: string[]) => Promise<void>;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft,   setDraft]   = useState(tags.join(', '));
+  const [saving,  setSaving]  = useState(false);
+
+  useEffect(() => { setDraft(tags.join(', ')); }, [tags]);
+
+  async function commit() {
+    const next = draft.split(/[,\s]+/).map(t => t.trim()).filter(Boolean);
+    setSaving(true);
+    try { await onSave(next); } finally { setSaving(false); setEditing(false); }
+  }
+
+  return (
+    <div>
+      <div style={{
+        fontSize: 10, fontWeight: 600, color: 'var(--text-3)',
+        textTransform: 'uppercase', letterSpacing: '0.06em',
+        marginBottom: 4, display: 'flex', alignItems: 'center', gap: 4,
+      }}>
+        {label}
+        <Pencil size={8} style={{ opacity: 0.4 }} />
+      </div>
+      {editing ? (
+        <div style={{ display: 'flex', gap: 5 }}>
+          <input
+            autoFocus
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onBlur={commit}
+            onKeyDown={e => {
+              if (e.key === 'Enter')  { e.preventDefault(); commit(); }
+              if (e.key === 'Escape') { setEditing(false); setDraft(tags.join(', ')); }
+            }}
+            placeholder="カンマ区切りで入力..."
+            disabled={saving}
+            style={{
+              flex: 1, fontSize: 11, padding: '4px 7px',
+              border: '1px solid var(--accent)', borderRadius: 6,
+              background: 'var(--bg)', outline: 'none', color: 'var(--text-1)',
+            }}
+          />
+          <button
+            onClick={commit} disabled={saving}
+            style={{ padding: '4px 8px', background: 'var(--accent)', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+            <Check size={11} />
+          </button>
+        </div>
+      ) : (
+        <div
+          onClick={() => setEditing(true)}
+          title="クリックして編集"
+          style={{ cursor: 'text', minHeight: 22 }}
+        >
+          {tags.length > 0 ? (
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {tags.map(t => (
+                <span key={t} style={{
+                  background: 'var(--accent)1A', color: 'var(--accent)',
+                  border: '1px solid var(--accent)33',
+                  borderRadius: 5, padding: '1px 7px', fontSize: 10, fontWeight: 600,
+                }}>{t}</span>
+              ))}
+            </div>
+          ) : (
+            <span style={{ fontSize: 10, color: 'var(--text-3)', fontStyle: 'italic', opacity: 0.7 }}>
+              クリックしてタグを追加
+            </span>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── HistorySection ──────────────────────────────────────────────────────────
+interface LogEntry {
+  id: string; event_type: string;
+  old_value: string | null; new_value: string | null;
+  created_at: string; user_name: string | null;
+}
+
+const EVENT_LABELS: Record<string, { label: string; color: string }> = {
+  'status_changed':       { label: 'ステータス変更', color: '#2563EB' },
+  'assigned':             { label: '担当者変更',     color: '#7C3AED' },
+  'connected':            { label: '接続追加',       color: '#059669' },
+  'published':            { label: '外部公開',       color: '#D97706' },
+  'marketplace_accepted': { label: '受注',           color: '#DC2626' },
+  'auto_promoted':        { label: '自動着手可',     color: '#10B981' },
+};
+function eventLabel(type: string) {
+  if (EVENT_LABELS[type]) return EVENT_LABELS[type];
+  if (type.startsWith('field_updated:')) {
+    return { label: type.replace('field_updated:', '') + 'を編集', color: '#6366F1' };
+  }
+  return { label: type, color: 'var(--text-3)' };
+}
+function relativeTime(iso: string) {
+  const diff = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (diff < 60)   return 'たった今';
+  if (diff < 3600) return `${Math.floor(diff / 60)}分前`;
+  if (diff < 86400) return `${Math.floor(diff / 3600)}時間前`;
+  return `${Math.floor(diff / 86400)}日前`;
+}
+
+function HistorySection({ pieceId }: { pieceId: string }) {
+  const [logs,    setLogs]    = useState<LogEntry[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    pieceApi.getLogs(pieceId)
+      .then(setLogs)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [pieceId]);
+
+  if (loading) return (
+    <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', padding: '20px 0' }}>読み込み中…</div>
+  );
+  if (logs.length === 0) return (
+    <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', padding: '20px 0' }}>変更履歴はありません</div>
+  );
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0 }}>
+      {logs.map((log, i) => {
+        const { label, color } = eventLabel(log.event_type);
+        const isLast = i === logs.length - 1;
+        return (
+          <div key={log.id} style={{ display: 'flex', gap: 10, paddingBottom: isLast ? 0 : 12, position: 'relative' }}>
+            {/* Timeline line */}
+            {!isLast && (
+              <div style={{
+                position: 'absolute', left: 7, top: 18, bottom: 0,
+                width: 1.5, background: 'var(--border)',
+              }} />
+            )}
+            {/* Dot */}
+            <div style={{
+              width: 15, height: 15, borderRadius: '50%', flexShrink: 0,
+              background: color + '22', border: `2px solid ${color}`,
+              marginTop: 2,
+            }} />
+            {/* Content */}
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: 11, fontWeight: 700, color }}>{label}</span>
+                {log.user_name && (
+                  <span style={{ fontSize: 10, color: 'var(--text-3)' }}>by {log.user_name}</span>
+                )}
+                <span style={{ fontSize: 10, color: 'var(--text-3)', marginLeft: 'auto' }}>
+                  {relativeTime(log.created_at)}
+                </span>
+              </div>
+              {(log.old_value || log.new_value) && (
+                <div style={{ marginTop: 3, fontSize: 10, color: 'var(--text-2)', display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                  {log.old_value && (
+                    <span style={{
+                      background: '#FEF2F2', border: '1px solid #FECACA',
+                      borderRadius: 4, padding: '0 5px', color: '#DC2626',
+                      textDecoration: 'line-through', maxWidth: 120,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{log.old_value}</span>
+                  )}
+                  {log.old_value && log.new_value && <span style={{ color: 'var(--text-3)' }}>→</span>}
+                  {log.new_value && (
+                    <span style={{
+                      background: '#F0FDF4', border: '1px solid #BBF7D0',
+                      borderRadius: 4, padding: '0 5px', color: '#16A34A',
+                      maxWidth: 140,
+                      overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    }}>{log.new_value}</span>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
