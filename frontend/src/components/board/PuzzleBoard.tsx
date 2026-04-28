@@ -48,6 +48,7 @@ import SprintPlannerPanel from './SprintPlannerPanel';
 import WorkloadRingPanel from './WorkloadRingPanel';
 import RemoteCursors from './RemoteCursors';
 import TemplatePanel from './TemplatePanel';
+import DashboardView from './DashboardView';
 import { ConnectionType } from '../../types';
 
 // ─── Global styles ────────────────────────────────────────────────────────────
@@ -93,9 +94,9 @@ const STATUS_LABELS: Record<PieceStatus, string> = {
   locked: 'ロック中', ready: '着手可能', in_progress: '進行中', done: '完了',
 };
 
-type ViewMode = 'flow' | 'bottleneck' | 'load' | 'gantt';
+type ViewMode = 'flow' | 'bottleneck' | 'load' | 'gantt' | 'dashboard';
 const VIEW_LABELS: Record<ViewMode, string> = {
-  flow: 'フロー', bottleneck: 'ボトルネック', load: '負荷', gantt: 'ガント',
+  flow: 'フロー', bottleneck: 'ボトルネック', load: '負荷', gantt: 'ガント', dashboard: 'ダッシュボード',
 };
 
 // ─── localStorage ─────────────────────────────────────────────────────────────
@@ -1649,6 +1650,21 @@ function PuzzleBoardInner() {
       {/* ═══ Workload Ring Panel (load mode) ════════════════════════════════ */}
       {viewMode === 'load' && (
         <WorkloadRingPanel pieces={pieces} workers={workers} />
+      )}
+
+      {/* ═══ Dashboard overlay ═══════════════════════════════════════════════ */}
+      {viewMode === 'dashboard' && (
+        <div style={{
+          position: 'absolute', inset: 0,
+          top: 0, zIndex: 8,
+          display: 'flex', flexDirection: 'column',
+          background: 'var(--bg)',
+        }}>
+          <div style={{ height: 62, flexShrink: 0 }} />
+          <div style={{ flex: 1, overflow: 'hidden' }}>
+            <DashboardView />
+          </div>
+        </div>
       )}
 
       {/* ═══ ReactFlow ════════════════════════════════════════════════════════ */}
