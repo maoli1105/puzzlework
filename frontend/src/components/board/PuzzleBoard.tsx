@@ -390,10 +390,16 @@ interface SummaryData {
   name: string; color: string; projectId: string;
   pieces: Piece[];
   onToggle: () => void;
+  workerMap: Record<string, { name: string }>;
+  onBulkReady: () => Promise<void>;
+  onBulkDone:  () => Promise<void>;
 }
 
 function ProjectSummaryNode({ data }: { data: SummaryData }) {
-  const { pieces: ps, color: col, name, onToggle } = data;
+  const { pieces: ps, color: col, name, onToggle, workerMap, onBulkReady, onBulkDone } = data;
+  const [hovered,  setHovered]  = useState(false);
+  const [bulking,  setBulking]  = useState(false);
+
   const done   = ps.filter(p => p.status === 'done').length;
   const inprog = ps.filter(p => p.status === 'in_progress').length;
   const ready  = ps.filter(p => p.status === 'ready').length;
@@ -404,14 +410,37 @@ function ProjectSummaryNode({ data }: { data: SummaryData }) {
     .filter(p => p.due_date && p.status !== 'done')
     .sort((a, b) => new Date(a.due_date!).getTime() - new Date(b.due_date!).getTime())[0];
 
+  // Build assignee → pieces map
+  const assigneeMap = new Map<string, { name: string; pieces: Piece[] }>();
+  for (const p of ps) {
+    if (p.assignee_id && workerMap[p.assignee_id]) {
+      if (!assigneeMap.has(p.assignee_id)) {
+        assigneeMap.set(p.assignee_id, { name: workerMap[p.assignee_id].name, pieces: [] });
+      }
+      assigneeMap.get(p.assignee_id)!.pieces.push(p);
+    }
+  }
+  const assignees = [...assigneeMap.entries()];
+  const unassigned = ps.filter(p => !p.assignee_id);
+
   const HANDLE_STYLE: React.CSSProperties = {
     width: 10, height: 10, borderRadius: 3,
     background: col, border: '2px solid var(--surface)',
     opacity: 0, transition: 'opacity 0.15s',
   };
 
+  const AVATAR_COLORS = ['#4F46E5','#0891B2','#059669','#D97706','#DC2626','#7C3AED','#0284C7'];
+  function avatarColor(id: string) {
+    let h = 0;
+    for (let i = 0; i < id.length; i++) h = (h * 31 + id.charCodeAt(i)) & 0xfffffff;
+    return AVATAR_COLORS[h % AVATAR_COLORS.length];
+  }
+
   return (
-    <>
+    <div style={{ position: 'relative' }}
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
+    >
       <Handle type="target" position={Position.Left}  id="tgt" className="piece-handle" style={{ ...HANDLE_STYLE, top: SUMMARY_H / 2, left: -1, transform: 'translate(-50%,-50%)' }} />
       <div
         onClick={onToggle}
@@ -419,12 +448,14 @@ function ProjectSummaryNode({ data }: { data: SummaryData }) {
           width: SUMMARY_W, height: SUMMARY_H,
           background: 'var(--surface)',
           borderRadius: 14,
-          border: `2px solid ${col}55`,
-          boxShadow: `0 6px 24px ${col}22, 0 2px 8px rgba(0,0,0,0.10)`,
+          border: hovered ? `2px solid ${col}99` : `2px solid ${col}55`,
+          boxShadow: hovered
+            ? `0 8px 32px ${col}33, 0 2px 8px rgba(0,0,0,0.12)`
+            : `0 6px 24px ${col}22, 0 2px 8px rgba(0,0,0,0.10)`,
           overflow: 'hidden',
           cursor: 'pointer',
           fontFamily: '"Inter","Outfit",sans-serif',
-          transition: 'box-shadow 0.2s, transform 0.12s',
+          transition: 'box-shadow 0.18s, border-color 0.18s',
           userSelect: 'none',
         }}>
         {/* Color header */}
@@ -481,7 +512,115 @@ function ProjectSummaryNode({ data }: { data: SummaryData }) {
         </div>
       </div>
       <Handle type="source" position={Position.Right} id="src" className="piece-handle" style={{ ...HANDLE_STYLE, top: SUMMARY_H / 2, right: -1, transform: 'translate(50%,-50%)' }} />
-    </>
+
+      {/* ── Hover detail popup ── */}
+      {hovered && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            position: 'absolute',
+            top: SUMMARY_H + 10,
+            left: 0,
+            width: SUMMARY_W + 60,
+            background: 'var(--surface)',
+            border: '1px solid var(--border)',
+            borderRadius: 12,
+            boxShadow: '0 12px 40px rgba(0,0,0,0.18)',
+            padding: '12px 14px',
+            zIndex: 9999,
+            pointerEvents: 'all',
+            fontFamily: '"Inter","Outfit",sans-serif',
+          }}>
+          {/* Assignees */}
+          {assignees.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>担当者</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                {assignees.map(([id, info]) => {
+                  const ac = avatarColor(id);
+                  const ip = info.pieces.filter(p => p.status === 'in_progress').length;
+                  const rd = info.pieces.filter(p => p.status === 'ready').length;
+                  const lk = info.pieces.filter(p => p.status === 'locked').length;
+                  const dn = info.pieces.filter(p => p.status === 'done').length;
+                  return (
+                    <div key={id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <div style={{
+                        width: 22, height: 22, borderRadius: '50%',
+                        background: ac, display: 'flex', alignItems: 'center', justifyContent: 'center',
+                        fontSize: 9, fontWeight: 800, color: '#fff', flexShrink: 0,
+                      }}>{info.name[0]}</div>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {info.name}
+                        </div>
+                        <div style={{ display: 'flex', gap: 4, marginTop: 2 }}>
+                          {dn > 0  && <span style={{ fontSize: 8, color: '#A0A096', background: '#A0A09611', borderRadius: 3, padding: '1px 4px', fontWeight: 700 }}>{dn}完</span>}
+                          {ip > 0  && <span style={{ fontSize: 8, color: '#2563EB', background: '#2563EB11', borderRadius: 3, padding: '1px 4px', fontWeight: 700 }}>{ip}進</span>}
+                          {rd > 0  && <span style={{ fontSize: 8, color: '#059669', background: '#05966911', borderRadius: 3, padding: '1px 4px', fontWeight: 700 }}>{rd}可</span>}
+                          {lk > 0  && <span style={{ fontSize: 8, color: '#9CA3AF', background: '#9CA3AF11', borderRadius: 3, padding: '1px 4px', fontWeight: 700 }}>{lk}待</span>}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+                {unassigned.length > 0 && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, opacity: 0.6 }}>
+                    <div style={{ width: 22, height: 22, borderRadius: '50%', background: 'var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, color: 'var(--text-3)', flexShrink: 0 }}>?</div>
+                    <span style={{ fontSize: 10, color: 'var(--text-3)' }}>未割り当て {unassigned.length}件</span>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Divider */}
+          {assignees.length > 0 && (
+            <div style={{ height: 1, background: 'var(--border)', marginBottom: 10 }} />
+          )}
+
+          {/* Bulk actions */}
+          <div style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 6 }}>一括変更</div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              disabled={bulking || locked === 0}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (locked === 0) return;
+                setBulking(true);
+                try { await onBulkReady(); } finally { setBulking(false); }
+              }}
+              style={{
+                flex: 1, padding: '6px 0', fontSize: 10, fontWeight: 700, cursor: locked > 0 ? 'pointer' : 'default',
+                background: locked > 0 ? '#ECFDF5' : 'var(--surface-sub)',
+                border: `1px solid ${locked > 0 ? '#6EE7B7' : 'var(--border)'}`,
+                color: locked > 0 ? '#059669' : 'var(--text-3)',
+                borderRadius: 8, transition: 'opacity 0.15s',
+                opacity: bulking ? 0.5 : 1,
+              }}>
+              {locked > 0 ? `→ 着手可 (${locked})` : '着手可なし'}
+            </button>
+            <button
+              disabled={bulking || done === total}
+              onClick={async (e) => {
+                e.stopPropagation();
+                if (done === total) return;
+                setBulking(true);
+                try { await onBulkDone(); } finally { setBulking(false); }
+              }}
+              style={{
+                flex: 1, padding: '6px 0', fontSize: 10, fontWeight: 700, cursor: done < total ? 'pointer' : 'default',
+                background: done < total ? '#F5F3FF' : 'var(--surface-sub)',
+                border: `1px solid ${done < total ? '#C4B5FD' : 'var(--border)'}`,
+                color: done < total ? '#7C3AED' : 'var(--text-3)',
+                borderRadius: 8, transition: 'opacity 0.15s',
+                opacity: bulking ? 0.5 : 1,
+              }}>
+              {done < total ? `✓ 全完了 (${total - done})` : '全完了済み'}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -805,6 +944,17 @@ function PuzzleBoardInner() {
           pieces: ps2, color: proj.color || '#6366f1',
           name: proj.name, projectId: projId,
           onToggle: () => toggleCollapse(projId),
+          workerMap,
+          onBulkReady: async () => {
+            const targets = ps2.filter(p => p.status === 'locked');
+            await Promise.all(targets.map(p => pieceApi.updateStatus(p.id, 'ready')));
+            refresh();
+          },
+          onBulkDone: async () => {
+            const targets = ps2.filter(p => p.status !== 'done');
+            await Promise.all(targets.map(p => pieceApi.updateStatus(p.id, 'done')));
+            refresh();
+          },
         } satisfies SummaryData,
       };
     }).filter(Boolean) as Node[];
@@ -1557,6 +1707,7 @@ function PuzzleBoardInner() {
         piece={selectedPiece}
         onClose={() => setSelectedPiece(null)}
         onUpdated={() => { refresh(); setSelectedPiece(null); push('更新しました', 'success'); }}
+        allPieces={pieces}
       />
     </div>
   );
