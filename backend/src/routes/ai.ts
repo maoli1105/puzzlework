@@ -5,7 +5,10 @@ import Anthropic from '@anthropic-ai/sdk';
 const router = Router();
 router.use(authenticate);
 
-const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+// Lazy-initialize to avoid hanging when ANTHROPIC_API_KEY is absent at module load
+function getClient(): Anthropic {
+  return new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY || 'dummy' });
+}
 
 /**
  * POST /api/ai/suggest-piece
@@ -21,7 +24,7 @@ router.post('/suggest-piece', requireAdmin, async (req: AuthRequest, res: Respon
   }
 
   try {
-    const message = await client.messages.create({
+    const message = await getClient().messages.create({
       model: 'claude-sonnet-4-5',
       max_tokens: 512,
       messages: [{
@@ -72,7 +75,7 @@ router.post('/suggest-sprint-name', requireAdmin, async (req: AuthRequest, res: 
   }
 
   try {
-    const message = await client.messages.create({
+    const message = await getClient().messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 128,
       messages: [{
@@ -119,7 +122,7 @@ router.post('/suggest-sprint', requireAdmin, async (req: AuthRequest, res: Respo
       `- ID:${w.id} ${w.name} 稼働中:${w.active_count ?? 0}件 スキル:[${Object.keys(w.skill_tree?.skills ?? {}).join(',')}]`
     ).join('\n');
 
-    const message = await client.messages.create({
+    const message = await getClient().messages.create({
       model: 'claude-haiku-4-5',
       max_tokens: 512,
       messages: [{

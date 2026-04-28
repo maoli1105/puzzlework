@@ -7,7 +7,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { IncomingMessage } from 'http';
 import jwt from 'jsonwebtoken';
-import pool from '../db';
+import { pool } from '../db';
 import { WSEvent } from '../types';
 
 interface ClientMeta {

@@ -991,7 +991,9 @@ function PuzzleBoardInner() {
         } satisfies IslandData,
         draggable: true, selectable: false, focusable: false,
         zIndex: -1,
-        style: { width: islandW, height: islandH, zIndex: -1, pointerEvents: 'none' },
+        // pointerEvents は省略（デフォルト auto）— ReactFlow がドラッグイベントを受け取れるようにする
+        // 内部 ProjectIslandNode の div は pointerEvents:none なのでクリックは子ピースに透過
+        style: { width: islandW, height: islandH, zIndex: -1 },
       });
 
       projPieces.forEach((piece, i) => {
@@ -1142,10 +1144,72 @@ function PuzzleBoardInner() {
     setNodes([...folderIslandNodes, ...folderPieceNodes, ...standaloneNodes, ...summaryNodes]);
     setEdges([...newEdges, ...parentChildEdges]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pieces, connections, viewMode, layoutMode, bottlenecks, projectMap, workerMap,
-      filterStatus, filterProject, filterSearch, showIslands,
+  }, [pieces, connections, viewMode, layoutMode, projectMap,
+      showIslands,
       collapsedProjects, toggleCollapse, expandedPieces, toggleExpand,
-      blockedIds, impactScales, criticalIds, childMap]);
+      childMap]);
+  // ※ blockedIds / criticalIds / impactScales は Effect 1.8 で差分パッチ
+
+  // ── Effect 1.8: blocked / critical / impact 変更 → 対象フィールドのみパッチ ─
+  useEffect(() => {
+    setNodes(prev => prev.map(n => {
+      if (n.type !== 'piece') return n;
+      const isBlocked  = blockedIds.has(n.id);
+      const isCritical = criticalIds.has(n.id);
+      const impactScale = impactScales[n.id] ?? 1;
+      if (n.data.isBlocked === isBlocked && n.data.isCritical === isCritical && n.data.impactScale === impactScale) return n;
+      return { ...n, data: { ...n.data, isBlocked, isCritical, impactScale } };
+    }));
+  }, [blockedIds, criticalIds, impactScales]);
+  // ※ bottlenecks は Effect 1.7 で差分パッチ
+
+  // ── Effect 1.7: bottlenecks 変更 → isBottleneck のみパッチ ──────────────
+  useEffect(() => {
+    const staleIds    = new Set(bottlenecks.stale_pieces.map(p => p.id));
+    const overloadIds = new Set(
+      bottlenecks.overloaded_users.flatMap(ou =>
+        (piecesRef.current).filter(p => p.assignee_id === ou.user.id).map(p => p.id)
+      )
+    );
+    const isBNMode = viewModeRef.current === 'bottleneck';
+    setNodes(prev => prev.map(n => {
+      if (n.type !== 'piece') return n;
+      const isBottleneck = isBNMode && (staleIds.has(n.id) || overloadIds.has(n.id));
+      if (n.data.isBottleneck === isBottleneck) return n;
+      return { ...n, data: { ...n.data, isBottleneck } };
+    }));
+  }, [bottlenecks, viewMode]);
+  // ※ workerMap も意図的に除外 → Effect 1.6 で担当者名だけパッチ
+
+  // ── Effect 1.6: workerMap 変更 → assigneeName のみパッチ ─────────────────
+  useEffect(() => {
+    setNodes(prev => prev.map(n => {
+      if (n.type !== 'piece') return n;
+      const assigneeId   = (n.data.piece as { assignee_id?: string }).assignee_id;
+      const assigneeName = assigneeId ? workerMap[assigneeId]?.name : undefined;
+      if (n.data.assigneeName === assigneeName) return n;
+      return { ...n, data: { ...n.data, assigneeName } };
+    }));
+  }, [workerMap]);
+  // ※ filterStatus / filterProject / filterSearch は意図的に除外 → Effect 1.5 で差分パッチ
+
+  // ── Effect 1.5: フィルター変更 → isDimmed だけパッチ（ノード位置に触れない）──
+  useEffect(() => {
+    setNodes(prev => prev.map(n => {
+      if (n.type !== 'piece') return n;
+      const p = n.data.piece as { status: string; project_id?: string; title: string };
+      const matchesStatus  = !filterStatus  || p.status === filterStatus;
+      const matchesProject = !filterProject || p.project_id === filterProject;
+      const matchesSearch  = !filterSearch  || p.title.toLowerCase().includes(filterSearch.toLowerCase());
+      const filterDimmed   = !!(filterStatus || filterProject || filterSearch) && !(matchesStatus && matchesProject && matchesSearch);
+      if (n.data.isDimmed === filterDimmed) return n; // 変化なし → 参照を保持
+      return {
+        ...n,
+        data:  { ...n.data, isDimmed: filterDimmed },
+        style: filterDimmed ? { pointerEvents: 'none' as const } : undefined,
+      };
+    }));
+  }, [filterStatus, filterProject, filterSearch]);
 
   // ── Effect 2: ホバー/エッジ選択 → data のみ更新（位置に触れない）──────────
   useEffect(() => {

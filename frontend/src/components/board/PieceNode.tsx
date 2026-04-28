@@ -567,7 +567,36 @@ function PieceNode({ data, selected }: Props) {
   );
 }
 
-export default memo(PieceNode);
+// カスタムコンパレータ: data オブジェクトは毎回新規生成されるが
+// 実際に描画に影響するフィールドだけを比較することで不要な再レンダリングを防ぐ
+function arePiecePropsEqual(prev: Props, next: Props): boolean {
+  if (prev.selected !== next.selected) return false;
+  const pd = prev.data; const nd = next.data;
+  return (
+    pd.piece.status      === nd.piece.status      &&
+    pd.piece.title       === nd.piece.title       &&
+    pd.piece.assignee_id === nd.piece.assignee_id &&
+    pd.piece.progress    === nd.piece.progress    &&
+    pd.piece.due_date    === nd.piece.due_date    &&
+    pd.piece.priority    === nd.piece.priority    &&
+    pd.isBlocked      === nd.isBlocked      &&
+    pd.isCritical     === nd.isCritical     &&
+    pd.isBottleneck   === nd.isBottleneck   &&
+    pd.isDimmed       === nd.isDimmed       &&
+    pd.isHighlighted  === nd.isHighlighted  &&
+    pd.isLOD          === nd.isLOD          &&
+    pd.isConnecting   === nd.isConnecting   &&
+    pd.childCount     === nd.childCount     &&
+    pd.isExpanded     === nd.isExpanded     &&
+    pd.isChild        === nd.isChild        &&
+    pd.impactScale    === nd.impactScale    &&
+    pd.projectColor   === nd.projectColor   &&
+    pd.assigneeName   === nd.assigneeName
+    // onToggleExpand は除外 — コールバック参照が変わっても描画は変わらない
+  );
+}
+
+export default memo(PieceNode, arePiecePropsEqual);
 
 // Export dimensions for use in PuzzleBoard layout
 export const PIECE_NODE_W = SVG_W;
