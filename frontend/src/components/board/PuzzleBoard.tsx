@@ -561,7 +561,7 @@ function PuzzleBoardInner() {
   const [workerMap,       setWorkerMap]       = useState<Record<string, { name: string }>>({});
   const [workers,         setWorkers]         = useState<User[]>([]);
   const [showIslands,       setShowIslands]       = useState(true);
-  const [layoutMode,        setLayoutMode]        = useState<'dag' | 'force'>('dag');
+  const [layoutMode,        setLayoutMode]        = useState<'dag' | 'force'>('force');
   const [showCritical,      setShowCritical]      = useState(false);
   const [sprintOpen,        setSprintOpen]        = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
@@ -591,7 +591,8 @@ function PuzzleBoardInner() {
   const viewModeRef   = useRef(viewMode);
   viewModeRef.current = viewMode;
 
-  const manualPositions = useRef<Record<string, { x: number; y: number }>>(loadSavedPositions());
+  const manualPositions       = useRef<Record<string, { x: number; y: number }>>(loadSavedPositions());
+  const initialCollapseApplied = useRef(false); // 初回ロード時の全折りを1回だけ適用
   // keep latest pieces/projectMap accessible inside callbacks without stale closure
   const piecesRef      = useRef(pieces);
   const projectMapRef  = useRef(projectMap);
@@ -602,7 +603,16 @@ function PuzzleBoardInner() {
   useEffect(() => {
     refresh();
     projectApi.list()
-      .then((ps: Project[]) => setProjectMap(Object.fromEntries(ps.map(p => [p.id, p]))))
+      .then((ps: Project[]) => {
+        setProjectMap(Object.fromEntries(ps.map(p => [p.id, p])));
+        // 初回ロード時のみ全プロジェクトを折りたたむ
+        if (!initialCollapseApplied.current && ps.length > 0) {
+          setCollapsedProjects(new Set(ps.map(p => p.id)));
+          initialCollapseApplied.current = true;
+          // ノード描画後にフィット
+          setTimeout(() => fitView({ padding: 0.22, duration: 600 }), 400);
+        }
+      })
       .catch(() => {});
     usersApi.workers()
       .then((ws: User[]) => {
@@ -615,7 +625,7 @@ function PuzzleBoardInner() {
         setVelocityBySkill(d.by_skill ?? [])
       )
       .catch(() => {});
-  }, [refresh]);
+  }, [refresh, fitView]);
 
   // ── URL param ?piece=ID ──
   useEffect(() => {
@@ -759,16 +769,32 @@ function PuzzleBoardInner() {
       }));
 
     // ── Summary nodes (collapsed projects) ───────────────────────────────
-    const summaryNodes: Node[] = Object.entries(collapsedByProject).map(([projId, ps2]) => {
+    const collapsedEntries = Object.entries(collapsedByProject);
+    const summaryNodes: Node[] = collapsedEntries.map(([projId, ps2], index) => {
       const proj = projectMap[projId];
       if (!proj) return null;
-      // Position: use saved or compute centroid of piece positions
+      // Position priority:
+      //   1. 手動ドラッグで保存した位置
+      //   2. ピースの manualPositions の重心
+      //   3. グリッドレイアウト（初回時に整列）
       const savedPos = manualPositions.current[`summary-${projId}`];
       const pos = savedPos ?? (() => {
-        const arr = ps2.map(p => manualPositions.current[p.id] ?? autoPos[p.id] ?? { x: 400, y: 400 });
+        const savedPiecePositions = ps2
+          .map(p => manualPositions.current[p.id])
+          .filter((p): p is { x: number; y: number } => !!p);
+        if (savedPiecePositions.length > 0) {
+          return {
+            x: savedPiecePositions.reduce((s, p) => s + p.x, 0) / savedPiecePositions.length,
+            y: savedPiecePositions.reduce((s, p) => s + p.y, 0) / savedPiecePositions.length,
+          };
+        }
+        // グリッド配置: 4列、カード間隔 40px
+        const COLS = 4;
+        const COL_W = SUMMARY_W + 40;
+        const ROW_H = SUMMARY_H + 48;
         return {
-          x: arr.reduce((s, p) => s + p.x, 0) / arr.length,
-          y: arr.reduce((s, p) => s + p.y, 0) / arr.length,
+          x: 120 + (index % COLS) * COL_W,
+          y: 160 + Math.floor(index / COLS) * ROW_H,
         };
       })();
       return {
@@ -968,13 +994,14 @@ function PuzzleBoardInner() {
     let needRebuild = false;
     for (const c of changes) {
       if (c.type === 'position' && c.position && !c.id.startsWith('island-')) {
-        // forceモードは手動位置を保存しない
-        if (layoutModeRef.current !== 'force') {
+        const isSummary = c.id.startsWith('summary-');
+        // サマリーカード（折りたたみ島）は常に位置を保存（force モードでも）
+        // 通常ピースは force モードでは保存しない（重力が再計算するため）
+        if (isSummary || layoutModeRef.current !== 'force') {
           manualPositions.current[c.id] = c.position;
           if (!c.dragging) {
             persistPosition(c.id, c.position);
-            // サマリーノードを動かしてもisland再計算は不要
-            if (!c.id.startsWith('summary-')) needRebuild = true;
+            if (!isSummary) needRebuild = true;
           }
         }
       }
