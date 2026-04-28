@@ -745,6 +745,11 @@ function PuzzleBoardInner() {
   const projectMapRef  = useRef(projectMap);
   piecesRef.current    = pieces;
   projectMapRef.current = projectMap;
+  // Folder mode: track which piece IDs are inside a parentNode island
+  const folderPieceIdsRef  = useRef<Set<string>>(new Set());
+  // Track collapsed state in ref for use in callbacks
+  const collapsedProjectsRef = useRef(collapsedProjects);
+  collapsedProjectsRef.current = collapsedProjects;
 
   // ── Layout cache: skip O(n²) force computation when topology hasn't changed ──
   const layoutCacheRef = useRef<{
@@ -822,16 +827,22 @@ function PuzzleBoardInner() {
   const { screenToFlowPosition } = useReactFlow();
 
   // ── Island rebuild helper ──────────────────────────────────────────────────
+  // Folder islands (draggable=true) are fixed-size → skip rebuild.
+  // Standalone pieces have no project → no islands.
+  // So rebuildIslands is effectively a no-op in folder mode.
   const rebuildIslands = useCallback(() => {
-    const ps = piecesRef.current;
-    const pm = projectMapRef.current;
-    if (!ps.length || !showIslands) return;
-
+    if (!showIslands) return;
     setNodes(prev => {
-      const pieceNodes  = prev.filter(n => n.type !== 'projectIsland');
-      const posMap      = Object.fromEntries(pieceNodes.map(n => [n.id, n.position]));
-      const islandNodes = computeIslandNodes(ps, posMap, pm, toggleCollapse);
-      return [...islandNodes, ...pieceNodes];
+      // Keep folder islands (draggable=true) unchanged
+      const folderIslands = prev.filter(n => n.type === 'projectIsland' && n.draggable);
+      const pieceNodes    = prev.filter(n => n.type !== 'projectIsland');
+      // Standalone pieces (no project, no parentNode) — rebuild surrounding island if any
+      const standalonePieces = piecesRef.current.filter(p => !p.project_id);
+      const posMap = Object.fromEntries(
+        pieceNodes.filter(n => !n.parentNode).map(n => [n.id, n.position])
+      );
+      const standaloneIslands = computeIslandNodes(standalonePieces, posMap, projectMapRef.current, toggleCollapse);
+      return [...standaloneIslands, ...folderIslands, ...pieceNodes];
     });
   }, [showIslands, toggleCollapse]);
 
@@ -866,57 +877,191 @@ function PuzzleBoardInner() {
     const isBNMode     = viewModeRef.current === 'bottleneck';
     // childMap / blockedIds / impactScales / criticalIds は useMemo でキャッシュ済み
 
-    // ── 折りたたみ分離: collapsed vs visible ──────────────────────────────
+    // ─────────────────────────────────────────────────────────────────────
+    // 分類:
+    //   ① collapsed  → summaryNode（折りたたみカード）
+    //   ② folder     → island（固定サイズ枠）+ pieceNode（parentNode付き・相対座標）
+    //   ③ standalone → force/dag レイアウト（プロジェクトなし）
+    // ─────────────────────────────────────────────────────────────────────
     const collapsedByProject: Record<string, Piece[]> = {};
+    const folderByProject:    Record<string, Piece[]> = {};
+    const standalonePieces:   Piece[]                 = [];
+
     for (const p of pieces) {
-      if (p.project_id && collapsedProjects.has(p.project_id)) {
-        if (!collapsedByProject[p.project_id]) collapsedByProject[p.project_id] = [];
-        collapsedByProject[p.project_id].push(p);
+      if (!p.parent_id || expandedPieces.has(p.parent_id)) {
+        if (p.project_id && collapsedProjects.has(p.project_id)) {
+          if (!collapsedByProject[p.project_id]) collapsedByProject[p.project_id] = [];
+          collapsedByProject[p.project_id].push(p);
+        } else if (p.project_id) {
+          if (!folderByProject[p.project_id]) folderByProject[p.project_id] = [];
+          folderByProject[p.project_id].push(p);
+        } else {
+          standalonePieces.push(p);
+        }
       }
     }
-    // 子ピースは親が展開されているときのみ表示
-    const visiblePieces = pieces.filter(p =>
-      (!p.project_id || !collapsedProjects.has(p.project_id)) &&
-      (!p.parent_id  || expandedPieces.has(p.parent_id))
-    );
-    // collapsed piece ID → summary node ID のマップ
+
+    // collapsed piece → summary node のマップ（エッジ再マッピング用）
     const pieceToSummary: Record<string, string> = {};
     for (const [projId, ps2] of Object.entries(collapsedByProject)) {
       for (const p of ps2) pieceToSummary[p.id] = `summary-${projId}`;
     }
 
-    // Choose layout strategy (visible pieces only)
-    // force レイアウトはトポロジー（ピースID集合＋接続）が変わった時だけ再計算
+    // ══ ① SUMMARY NODES (collapsed) ═════════════════════════════════════
+    const collapsedEntries = Object.entries(collapsedByProject);
+    const summaryNodes: Node[] = collapsedEntries.map(([projId, ps2], index) => {
+      const proj = projectMap[projId];
+      if (!proj) return null;
+      const savedPos = manualPositions.current[`summary-${projId}`];
+      const pos = savedPos ?? (() => {
+        const savedPiecePositions = ps2
+          .map(p => manualPositions.current[p.id])
+          .filter((p): p is { x: number; y: number } => !!p);
+        if (savedPiecePositions.length > 0) {
+          return {
+            x: savedPiecePositions.reduce((s, p) => s + p.x, 0) / savedPiecePositions.length,
+            y: savedPiecePositions.reduce((s, p) => s + p.y, 0) / savedPiecePositions.length,
+          };
+        }
+        const COLS = 4;
+        const COL_W = SUMMARY_W + 40;
+        const ROW_H = SUMMARY_H + 48;
+        return { x: 120 + (index % COLS) * COL_W, y: 160 + Math.floor(index / COLS) * ROW_H };
+      })();
+      return {
+        id: `summary-${projId}`, type: 'projectSummary', position: pos,
+        data: {
+          pieces: ps2, color: proj.color || '#6366f1',
+          name: proj.name, projectId: projId,
+          onToggle: () => toggleCollapse(projId),
+          workerMap,
+          onBulkReady: async () => {
+            await Promise.all(ps2.filter(p => p.status === 'locked').map(p => pieceApi.updateStatus(p.id, 'ready')));
+            refresh();
+          },
+          onBulkDone: async () => {
+            await Promise.all(ps2.filter(p => p.status !== 'done').map(p => pieceApi.updateStatus(p.id, 'done')));
+            refresh();
+          },
+        } satisfies SummaryData,
+      };
+    }).filter(Boolean) as Node[];
+
+    // ══ ② FOLDER ISLANDS + PIECE NODES (expanded projects) ══════════════
+    const FOLD_COLS         = 3;
+    const FOLD_GAP          = 32;
+    const FOLD_PAD_X        = 32;
+    const FOLD_PAD_TOP      = 62;  // header pill の下
+    const FOLD_PAD_BOTTOM   = 32;
+    const folderIslandNodes: Node[] = [];
+    const folderPieceNodes:  Node[] = [];
+    const newFolderPieceIds = new Set<string>();
+
+    // 自動配置用カーソル（初回配置のみ使用）
+    let autoIslandX = 80, autoIslandY = 80;
+
+    for (const [projId, projPieces] of Object.entries(folderByProject)) {
+      const proj = projectMap[projId];
+      if (!proj || projPieces.length === 0) continue;
+
+      const cols    = Math.min(FOLD_COLS, projPieces.length);
+      const rows    = Math.ceil(projPieces.length / cols);
+      const islandW = cols * PIECE_NODE_W + (cols - 1) * FOLD_GAP + FOLD_PAD_X * 2;
+      const islandH = rows * PIECE_NODE_H + (rows - 1) * FOLD_GAP + FOLD_PAD_TOP + FOLD_PAD_BOTTOM;
+      const islandId = `island-${projId}`;
+
+      // Island 位置: 保存済み > サマリーカードの旧位置 > 自動グリッド
+      if (!manualPositions.current[islandId]) {
+        const fromSummary = manualPositions.current[`summary-${projId}`];
+        manualPositions.current[islandId] = fromSummary ?? { x: autoIslandX, y: autoIslandY };
+        autoIslandX += islandW + 80;
+        if (autoIslandX > 1800) { autoIslandX = 80; autoIslandY += islandH + 80; }
+      }
+      const islandPos = manualPositions.current[islandId];
+
+      folderIslandNodes.push({
+        id: islandId, type: 'projectIsland',
+        position: islandPos,
+        data: {
+          width: islandW, height: islandH,
+          color: proj.color || '#6366f1',
+          name: proj.name, count: projPieces.length,
+          projectId: projId, isCollapsed: false,
+          onToggle: () => toggleCollapse(projId),
+        } satisfies IslandData,
+        draggable: true, selectable: false, focusable: false,
+        zIndex: -1,
+        style: { width: islandW, height: islandH, zIndex: -1, pointerEvents: 'none' },
+      });
+
+      projPieces.forEach((piece, i) => {
+        const col        = i % cols;
+        const row        = Math.floor(i / cols);
+        const defaultRel = {
+          x: FOLD_PAD_X + col * (PIECE_NODE_W + FOLD_GAP),
+          y: FOLD_PAD_TOP + row * (PIECE_NODE_H + FOLD_GAP),
+        };
+        const relPos = manualPositions.current[`f:${piece.id}`] ?? defaultRel;
+        newFolderPieceIds.add(piece.id);
+
+        const isBottleneck   = isBNMode && (staleIds.has(piece.id) || overloadIds.has(piece.id));
+        const isBlocked      = blockedIds.has(piece.id);
+        const thisChildren   = childMap[piece.id] ?? [];
+        const matchesStatus  = !filterStatus  || piece.status === filterStatus;
+        const matchesProject = !filterProject || piece.project_id === filterProject;
+        const matchesSearch  = !filterSearch  || piece.title.toLowerCase().includes(filterSearch.toLowerCase());
+        const filterDimmed   = !!(filterStatus || filterProject || filterSearch) && !(matchesStatus && matchesProject && matchesSearch);
+
+        folderPieceNodes.push({
+          id: piece.id, type: 'piece',
+          parentNode: islandId,
+          extent: 'parent',
+          position: relPos,
+          data: {
+            piece, isBottleneck, isBlocked, isCritical: criticalIds.has(piece.id), isConnecting: false,
+            projectColor: proj.color, projectName: proj.name,
+            assigneeName: piece.assignee_id ? workerMap[piece.assignee_id]?.name : undefined,
+            impactScale: impactScales[piece.id] ?? 1,
+            isDimmed: filterDimmed, isHighlighted: false,
+            childCount: thisChildren.length,
+            isExpanded: expandedPieces.has(piece.id),
+            onToggleExpand: () => toggleExpand(piece.id),
+            isChild: !!piece.parent_id,
+          },
+          style: filterDimmed ? { pointerEvents: 'none' as const } : undefined,
+        });
+      });
+    }
+    folderPieceIdsRef.current = newFolderPieceIds;
+
+    // ══ ③ STANDALONE NODES (no project) — force / dag ═══════════════════
     const visibleConns = connections.filter(c =>
-      !pieceToSummary[c.from_piece_id] && !pieceToSummary[c.to_piece_id]
+      !pieceToSummary[c.from_piece_id] && !pieceToSummary[c.to_piece_id] &&
+      !newFolderPieceIds.has(c.from_piece_id) && !newFolderPieceIds.has(c.to_piece_id)
     );
     const topoKey = layoutMode + '|' +
-      visiblePieces.map(p => p.id).sort().join(',') + '|' +
+      standalonePieces.map(p => p.id).sort().join(',') + '|' +
       visibleConns.map(c => `${c.from_piece_id}>${c.to_piece_id}`).sort().join(',');
 
     let autoPos: Record<string, { x: number; y: number }>;
     if (layoutMode === 'force') {
       if (layoutCacheRef.current.key === topoKey) {
-        autoPos = layoutCacheRef.current.pos; // キャッシュ流用 — O(n²)スキップ
+        autoPos = layoutCacheRef.current.pos;
       } else {
-        autoPos = forceDirectedLayout(visiblePieces, visibleConns, manualPositions.current);
+        autoPos = forceDirectedLayout(standalonePieces, visibleConns, manualPositions.current);
         layoutCacheRef.current = { key: topoKey, pos: autoPos };
       }
     } else {
-      autoPos = autoLayout(visiblePieces, connections);
+      autoPos = autoLayout(standalonePieces, connections);
     }
 
-    // ── Visible piece nodes ───────────────────────────────────────────────
-    const newNodes: Node[] = visiblePieces.map(piece => {
-      const isBottleneck = isBNMode && (staleIds.has(piece.id) || overloadIds.has(piece.id));
-      const isBlocked    = blockedIds.has(piece.id);
-
-      // 子ピースは親の下に整列、手動ドラッグも尊重
+    const standaloneNodes: Node[] = standalonePieces.map(piece => {
+      const isBottleneck   = isBNMode && (staleIds.has(piece.id) || overloadIds.has(piece.id));
+      const isBlocked      = blockedIds.has(piece.id);
+      const thisChildren   = childMap[piece.id] ?? [];
       let pos: { x: number; y: number };
       if (piece.parent_id && expandedPieces.has(piece.parent_id)) {
-        const parentPos = manualPositions.current[piece.parent_id]
-          ?? autoPos[piece.parent_id]
-          ?? { x: 400, y: 300 };
+        const parentPos = manualPositions.current[piece.parent_id] ?? autoPos[piece.parent_id] ?? { x: 400, y: 300 };
         const siblings  = childMap[piece.parent_id] ?? [];
         const idx       = siblings.indexOf(piece.id);
         const n         = siblings.length;
@@ -929,117 +1074,58 @@ function PuzzleBoardInner() {
           ? autoPos[piece.id] ?? { x: 60, y: 60 }
           : manualPositions.current[piece.id] ?? autoPos[piece.id] ?? { x: 60, y: 60 };
       }
-
-      const project      = piece.project_id ? projectMap[piece.project_id] : undefined;
-      const assigneeName = piece.assignee_id ? workerMap[piece.assignee_id]?.name : undefined;
-      const thisChildren = childMap[piece.id] ?? [];
-
       const matchesStatus  = !filterStatus  || piece.status === filterStatus;
       const matchesProject = !filterProject || piece.project_id === filterProject;
       const matchesSearch  = !filterSearch  || piece.title.toLowerCase().includes(filterSearch.toLowerCase());
       const filterDimmed   = !!(filterStatus || filterProject || filterSearch) && !(matchesStatus && matchesProject && matchesSearch);
-
       return {
         id: piece.id, type: 'piece', position: pos,
         data: {
           piece, isBottleneck, isBlocked, isCritical: criticalIds.has(piece.id), isConnecting: false,
-          projectColor: project?.color, projectName: project?.name,
-          assigneeName,
+          projectColor: undefined, projectName: undefined,
+          assigneeName: piece.assignee_id ? workerMap[piece.assignee_id]?.name : undefined,
           impactScale: impactScales[piece.id] ?? 1,
           isDimmed: filterDimmed, isHighlighted: false,
-          // 階層
-          childCount:      thisChildren.length,
-          isExpanded:      expandedPieces.has(piece.id),
-          onToggleExpand:  () => toggleExpand(piece.id),
-          isChild:         !!piece.parent_id,
+          childCount: thisChildren.length,
+          isExpanded: expandedPieces.has(piece.id),
+          onToggleExpand: () => toggleExpand(piece.id),
+          isChild: !!piece.parent_id,
         },
         style: filterDimmed ? { pointerEvents: 'none' as const } : undefined,
       };
     });
 
-    // ── 親子リンクエッジ（ツリー構造の視覚的接続）──────────────────────────
-    const parentChildEdges: Edge[] = visiblePieces
-      .filter(p => p.parent_id && visiblePieces.some(v => v.id === p.parent_id))
+    // 親子エッジ（スタンドアロンピースのみ）
+    const parentChildEdges: Edge[] = standalonePieces
+      .filter(p => p.parent_id && standalonePieces.some(v => v.id === p.parent_id))
       .map(p => ({
-        id:     `pc-${p.parent_id}-${p.id}`,
-        source: p.parent_id!,
-        target: p.id,
-        type:   'smoothstep',
-        style:  { stroke: '#94a3b8', strokeWidth: 1.5, strokeDasharray: '4 3', opacity: 0.5 },
+        id: `pc-${p.parent_id}-${p.id}`, source: p.parent_id!, target: p.id,
+        type: 'smoothstep',
+        style: { stroke: '#94a3b8', strokeWidth: 1.5, strokeDasharray: '4 3', opacity: 0.5 },
         markerEnd: { type: MarkerType.ArrowClosed, color: '#94a3b8', width: 12, height: 12 },
       }));
 
-    // ── Summary nodes (collapsed projects) ───────────────────────────────
-    const collapsedEntries = Object.entries(collapsedByProject);
-    const summaryNodes: Node[] = collapsedEntries.map(([projId, ps2], index) => {
-      const proj = projectMap[projId];
-      if (!proj) return null;
-      // Position priority:
-      //   1. 手動ドラッグで保存した位置
-      //   2. ピースの manualPositions の重心
-      //   3. グリッドレイアウト（初回時に整列）
-      const savedPos = manualPositions.current[`summary-${projId}`];
-      const pos = savedPos ?? (() => {
-        const savedPiecePositions = ps2
-          .map(p => manualPositions.current[p.id])
-          .filter((p): p is { x: number; y: number } => !!p);
-        if (savedPiecePositions.length > 0) {
-          return {
-            x: savedPiecePositions.reduce((s, p) => s + p.x, 0) / savedPiecePositions.length,
-            y: savedPiecePositions.reduce((s, p) => s + p.y, 0) / savedPiecePositions.length,
-          };
-        }
-        // グリッド配置: 4列、カード間隔 40px
-        const COLS = 4;
-        const COL_W = SUMMARY_W + 40;
-        const ROW_H = SUMMARY_H + 48;
-        return {
-          x: 120 + (index % COLS) * COL_W,
-          y: 160 + Math.floor(index / COLS) * ROW_H,
-        };
-      })();
-      return {
-        id: `summary-${projId}`,
-        type: 'projectSummary',
-        position: pos,
-        data: {
-          pieces: ps2, color: proj.color || '#6366f1',
-          name: proj.name, projectId: projId,
-          onToggle: () => toggleCollapse(projId),
-          workerMap,
-          onBulkReady: async () => {
-            const targets = ps2.filter(p => p.status === 'locked');
-            await Promise.all(targets.map(p => pieceApi.updateStatus(p.id, 'ready')));
-            refresh();
-          },
-          onBulkDone: async () => {
-            const targets = ps2.filter(p => p.status !== 'done');
-            await Promise.all(targets.map(p => pieceApi.updateStatus(p.id, 'done')));
-            refresh();
-          },
-        } satisfies SummaryData,
-      };
-    }).filter(Boolean) as Node[];
-
-    // ── Island nodes (only for expanded projects, behind visible pieces) ──
-    const posMap      = Object.fromEntries(newNodes.map(n => [n.id, n.position]));
-    const islandNodes = showIslands ? computeIslandNodes(visiblePieces, posMap, projectMap, toggleCollapse) : [];
-
-    // ── Edges with piece→summary remapping ───────────────────────────────
+    // ══ EDGES (with piece→summary remapping) ════════════════════════════
     const edgeKeySet = new Set<string>();
     const newEdges: Edge[] = [];
     for (const conn of connections) {
+      // フォルダ内のピース同士のエッジは表示しない（折りたたみ時に概念的につながっていれば十分）
+      // フォルダ←→外部のエッジは表示
+      const srcInFolder = newFolderPieceIds.has(conn.from_piece_id);
+      const tgtInFolder = newFolderPieceIds.has(conn.to_piece_id);
+      if (srcInFolder && tgtInFolder) continue; // 同じフォルダ内 → 非表示
+
       const src = pieceToSummary[conn.from_piece_id] ?? conn.from_piece_id;
       const tgt = pieceToSummary[conn.to_piece_id]   ?? conn.to_piece_id;
-      if (src === tgt) continue; // 同じサマリーノード内→非表示
+      if (src === tgt) continue;
       const key = `${src}→${tgt}`;
-      if (edgeKeySet.has(key)) continue; // 重複除去
+      if (edgeKeySet.has(key)) continue;
       edgeKeySet.add(key);
       const isMapped = src !== conn.from_piece_id || tgt !== conn.to_piece_id;
       const color = EDGE_COLORS[conn.type] ?? EDGE_COLORS.default;
       newEdges.push({
-        id:      isMapped ? key : conn.id,
-        source:  src, target: tgt,
+        id:     isMapped ? key : conn.id,
+        source: src, target: tgt,
         sourceHandle: isMapped && src.startsWith('summary-') ? 'src' : undefined,
         targetHandle: isMapped && tgt.startsWith('summary-') ? 'tgt' : undefined,
         type: 'smoothstep', animated: !isMapped && conn.type === 'sequential',
@@ -1053,7 +1139,7 @@ function PuzzleBoardInner() {
       });
     }
 
-    setNodes([...islandNodes, ...newNodes, ...summaryNodes]);
+    setNodes([...folderIslandNodes, ...folderPieceNodes, ...standaloneNodes, ...summaryNodes]);
     setEdges([...newEdges, ...parentChildEdges]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pieces, connections, viewMode, layoutMode, bottlenecks, projectMap, workerMap,
@@ -1220,15 +1306,27 @@ function PuzzleBoardInner() {
   const handleNodesChange = useCallback((changes: NodeChange[]) => {
     let needRebuild = false;
     for (const c of changes) {
-      if (c.type === 'position' && c.position && !c.id.startsWith('island-')) {
-        const isSummary = c.id.startsWith('summary-');
-        // サマリーカード（折りたたみ島）は常に位置を保存（force モードでも）
-        // 通常ピースは force モードでは保存しない（重力が再計算するため）
-        if (isSummary || layoutModeRef.current !== 'force') {
+      if (c.type === 'position' && c.position) {
+        if (c.id.startsWith('island-')) {
+          // フォルダ島ドラッグ → 絶対位置を保存
           manualPositions.current[c.id] = c.position;
-          if (!c.dragging) {
-            persistPosition(c.id, c.position);
-            if (!isSummary) needRebuild = true;
+          if (!c.dragging) persistPosition(c.id, c.position);
+        } else if (c.id.startsWith('summary-')) {
+          // 折りたたみサマリー → 絶対位置を保存
+          manualPositions.current[c.id] = c.position;
+          if (!c.dragging) persistPosition(c.id, c.position);
+        } else if (folderPieceIdsRef.current.has(c.id)) {
+          // フォルダ内ピース → 相対位置を保存（f: プレフィックス）
+          manualPositions.current[`f:${c.id}`] = c.position;
+          if (!c.dragging) persistPosition(`f:${c.id}`, c.position);
+        } else {
+          // スタンドアロンピース → 絶対位置（force モード以外のみ保存）
+          if (layoutModeRef.current !== 'force') {
+            manualPositions.current[c.id] = c.position;
+            if (!c.dragging) {
+              persistPosition(c.id, c.position);
+              needRebuild = true;
+            }
           }
         }
       }
@@ -1236,6 +1334,17 @@ function PuzzleBoardInner() {
     onNodesChange(changes);
     if (needRebuild) rebuildIslands();
   }, [onNodesChange, rebuildIslands]);
+
+  // ── Piece delete ─────────────────────────────────────────────────────────
+  async function handleDeletePiece(pieceId: string) {
+    setContextMenu(null);
+    setSelectedPiece(null);
+    try {
+      await pieceApi.delete(pieceId);
+      await refresh();
+      push('ピースを削除しました', 'success');
+    } catch { push('削除に失敗しました', 'warn'); }
+  }
 
   // ── Context menu actions ──────────────────────────────────────────────────
   async function handleContextStatus(piece: Piece, status: PieceStatus) {
@@ -1759,6 +1868,18 @@ function PuzzleBoardInner() {
             style={{ width: '100%', padding: '7px 14px', border: 'none', background: 'transparent', color: 'var(--text-2)', textAlign: 'left', cursor: 'pointer', fontSize: 12 }}>
             📋 詳細を開く
           </button>
+          <div style={{ height: 1, background: 'var(--border)', margin: '4px 0' }} />
+          <button
+            onClick={() => {
+              if (window.confirm(`「${contextMenu.piece.title}」を削除しますか？\n依存関係も一緒に削除されます。`)) {
+                handleDeletePiece(contextMenu.pieceId);
+              } else {
+                setContextMenu(null);
+              }
+            }}
+            style={{ width: '100%', padding: '7px 14px', border: 'none', background: 'transparent', color: '#EF4444', textAlign: 'left', cursor: 'pointer', fontSize: 12, fontWeight: 600 }}>
+            🗑 削除
+          </button>
         </div>
       )}
 
@@ -1824,6 +1945,7 @@ function PuzzleBoardInner() {
         onClose={() => setSelectedPiece(null)}
         onUpdated={() => { refresh(); setSelectedPiece(null); push('更新しました', 'success'); }}
         allPieces={pieces}
+        onDelete={handleDeletePiece}
       />
       <TemplatePanel
         open={templateOpen}

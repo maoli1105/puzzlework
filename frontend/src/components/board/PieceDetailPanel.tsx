@@ -1,11 +1,11 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Piece, PieceStatus, Project } from '../../types';
 import { pieces as pieceApi, users as userApi, projects as projectApi } from '../../services/api';
-import { X, Sparkles, Clock, MessageCircle, History, Pencil, Check } from 'lucide-react';
+import { X, Sparkles, Clock, MessageCircle, History, Pencil, Check, Trash2 } from 'lucide-react';
 
 interface Worker { id: string; name: string; active_pieces: number; }
 interface SuggestedWorker { id: string; name: string; score: number; active_pieces: number; avg_days: number | null; skill_match_count: number; }
-interface Props { piece: Piece | null; onClose: () => void; onUpdated: () => void; allPieces?: Piece[]; }
+interface Props { piece: Piece | null; onClose: () => void; onUpdated: () => void; allPieces?: Piece[]; onDelete?: (id: string) => void; }
 
 const STATUS_ACCENT: Record<PieceStatus, string> = {
   locked:      'var(--text-3)',
@@ -23,7 +23,7 @@ const ADMIN_TRANSITIONS: Record<PieceStatus, PieceStatus[]> = {
   done:        [],
 };
 
-export default function PieceDetailPanel({ piece, onClose, onUpdated, allPieces = [] }: Props) {
+export default function PieceDetailPanel({ piece, onClose, onUpdated, allPieces = [], onDelete }: Props) {
   const [updating, setUpdating]       = useState(false);
   const [workers, setWorkers]         = useState<Worker[]>([]);
   const [projects, setProjects]       = useState<Project[]>([]);
@@ -151,9 +151,26 @@ export default function PieceDetailPanel({ piece, onClose, onUpdated, allPieces 
                     textStyle={{ fontSize: 14, fontWeight: 600, color: 'var(--text-1)', lineHeight: 1.35, letterSpacing: '-0.01em' }}
                   />
                 </div>
-                <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', display: 'flex', alignItems: 'center', padding: 4, flexShrink: 0 }}>
-                  <X size={14} />
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
+                  {onDelete && (
+                    <button
+                      onClick={() => {
+                        if (window.confirm(`「${piece.title}」を削除しますか？\n依存関係も一緒に削除されます。`)) {
+                          onDelete(piece.id);
+                        }
+                      }}
+                      title="ピースを削除"
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#EF4444', display: 'flex', alignItems: 'center', padding: 4, opacity: 0.7 }}
+                      onMouseEnter={e => (e.currentTarget.style.opacity = '1')}
+                      onMouseLeave={e => (e.currentTarget.style.opacity = '0.7')}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  )}
+                  <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', display: 'flex', alignItems: 'center', padding: 4 }}>
+                    <X size={14} />
+                  </button>
+                </div>
               </div>
 
               {/* ステータスバッジ */}

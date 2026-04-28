@@ -174,6 +174,25 @@ router.get('/:id/logs', authenticate, async (req, res) => {
 });
 
 router.patch('/:id', requireAdmin, updatePiece);
+router.delete('/:id', requireAdmin, async (req, res) => {
+  const { id } = req.params;
+  const company_id = (req as { user?: { company_id: string } }).user?.company_id;
+  // 同社のピースのみ削除可
+  const { rows: [piece] } = await pool.query(
+    'SELECT id FROM pieces WHERE id = $1 AND company_id = $2', [id, company_id]
+  );
+  if (!piece) { res.status(404).json({ error: 'Not found' }); return; }
+  // 依存関係を削除
+  await pool.query('DELETE FROM connections WHERE from_piece_id = $1 OR to_piece_id = $1', [id]);
+  // 子ピースの親を解除（孤立させる）
+  await pool.query('UPDATE pieces SET parent_id = NULL WHERE parent_id = $1', [id]);
+  // コメント・タイムログ・ログは CASCADE DELETE（FK設定次第）、なければ手動
+  await pool.query('DELETE FROM piece_comments WHERE piece_id = $1', [id]);
+  await pool.query('DELETE FROM time_logs WHERE piece_id = $1', [id]);
+  await pool.query('DELETE FROM piece_logs WHERE piece_id = $1', [id]);
+  await pool.query('DELETE FROM pieces WHERE id = $1', [id]);
+  res.json({ success: true });
+});
 router.patch('/:id/status', updateStatus);
 router.patch('/:id/assign', requireAdmin, assignPiece);
 router.post('/:id/connect', requireAdmin, connectPiece);

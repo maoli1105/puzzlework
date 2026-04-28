@@ -78,6 +78,7 @@ export const pieces = {
     api.patch(`/pieces/connections/${id}`, data).then((r) => r.data),
   update: (id: string, data: Record<string, unknown>) =>
     api.patch(`/pieces/${id}`, data).then((r) => r.data),
+  delete: (id: string) => api.delete(`/pieces/${id}`).then((r) => r.data),
   publish: (id: string, reward: number) =>
     api.patch(`/pieces/${id}/publish`, { reward }).then((r) => r.data),
   unpublish: (id: string) =>
