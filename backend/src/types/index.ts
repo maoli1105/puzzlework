@@ -1,8 +1,12 @@
-// フロントエンド共有型定義（バックエンド types/index.ts と対応）
+// ============================================================
+// PuzzleWork 共有型定義
+// Antigravity修正ポイント：型名・フィールド名の変更はここを変更
+// ============================================================
 
 export type PieceStatus = 'locked' | 'ready' | 'in_progress' | 'done';
 export type ConnectionType = 'sequential' | 'parallel' | 'conditional';
 export type UserRole = 'admin' | 'worker' | 'external';
+export type CompanyPlan = 'free' | 'pro' | 'enterprise';
 
 export interface Piece {
   id: string;
@@ -11,47 +15,15 @@ export interface Piece {
   value_metric: string;
   expected_impact: string;
   assignee_id: string | null;
-  company_id: string;
   status: PieceStatus;
   priority: number;
   skill_tags: string[];
   is_external: boolean;
   reward: number;
-  due_date: string | null;
-  start_date: string | null;
-  progress: number;
-  business_impact: number;
-  project_id: string | null;
-  created_at: string;
-  started_at: string | null;
-  completed_at: string | null;
-  display_order: number;
-  parent_id: string | null;
-}
-
-export interface Project {
-  id: string;
+  created_at: Date;
+  started_at: Date | null;
+  completed_at: Date | null;
   company_id: string;
-  name: string;
-  description: string;
-  color: string;
-  status: 'active' | 'completed' | 'archived';
-  due_date: string | null;
-  created_at: string;
-}
-
-export type LeaveStatus = 'pending' | 'approved' | 'rejected';
-
-export interface LeaveRequest {
-  id: string;
-  user_id: string;
-  company_id: string;
-  start_date: string;
-  end_date: string;
-  reason: string;
-  status: LeaveStatus;
-  created_at: string;
-  user_name?: string;
 }
 
 export interface Connection {
@@ -60,6 +32,7 @@ export interface Connection {
   to_piece_id: string;
   type: ConnectionType;
   condition: string | null;
+  created_at: Date;
 }
 
 export interface User {
@@ -70,14 +43,41 @@ export interface User {
   company_id: string;
   skill_tree: SkillTree;
   total_pieces_done: number;
+  created_at: Date;
+}
+
+export interface Company {
+  id: string;
+  name: string;
+  plan: CompanyPlan;
+  skill_tree: CompanySkillTree;
+  external_pieces_published: number;
+  created_at: Date;
+}
+
+export interface SkillCategory {
+  level: number;
+  pieces_done: number;
+  avg_rating: number;
+  sub_skills?: Record<string, { pieces: number; level: number }>;
 }
 
 export interface SkillTree {
   user_id: string;
-  skills: Record<string, { level: number; pieces_done: number; avg_rating: number }>;
+  skills: Record<string, SkillCategory>;
   total_pieces_done: number;
   overall_rating: number;
   badges: string[];
+}
+
+export interface CompanySkillTree {
+  company_id: string;
+  industry_profile: Record<string, number>;
+  completion_score: number;
+  speed_score: number;
+  worker_rating: number;
+  external_pieces_published: number;
+  external_pieces_completed: number;
 }
 
 export interface BottleneckReport {
@@ -86,17 +86,9 @@ export interface BottleneckReport {
   blocked_chains: { blocked_piece: Piece; upstream_piece: Piece }[];
 }
 
+// WebSocket イベント型
 export interface WSEvent {
   type: 'piece_ready' | 'piece_done' | 'bottleneck_alert' | 'skill_levelup' | 'alert' | 'auto_promoted'
       | 'cursor_move' | 'cursor_leave';
   payload: Record<string, unknown>;
-}
-
-// カーソル共有
-export interface RemoteCursor {
-  userId:    string;
-  name:      string;
-  x:         number;   // flow 座標
-  y:         number;
-  updatedAt: number;   // timestamp for stale detection
 }

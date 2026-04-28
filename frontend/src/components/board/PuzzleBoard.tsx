@@ -34,7 +34,7 @@ import ReactFlow, {
   useViewport,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Piece, Connection, Project, PieceStatus, User } from '../../types';
+import { Piece, Connection, Project, PieceStatus, User, RemoteCursor } from '../../types';
 import { pieces as pieceApi, projects as projectApi, users as usersApi } from '../../services/api';
 import { usePieces } from '../../hooks/usePieces';
 import { useWebSocket } from '../../hooks/useWebSocket';
@@ -46,6 +46,7 @@ import PieceDetailPanel from './PieceDetailPanel';
 import GanttView from './GanttView';
 import SprintPlannerPanel from './SprintPlannerPanel';
 import WorkloadRingPanel from './WorkloadRingPanel';
+import RemoteCursors from './RemoteCursors';
 import { ConnectionType } from '../../types';
 
 // ─── Global styles ────────────────────────────────────────────────────────────
@@ -784,11 +785,38 @@ function PuzzleBoardInner() {
     if (found) { setSelectedPiece(found); setSearchParams({}, { replace: true }); }
   }, [pieces, searchParams, setSearchParams]);
 
+  // ── リモートカーソル state ──
+  const [remoteCursors, setRemoteCursors] = useState<Map<string, RemoteCursor>>(new Map());
+
   // ── WebSocket ──
-  useWebSocket(useCallback((event: WSEvent) => {
+  const { send: wsSend } = useWebSocket(useCallback((event: WSEvent) => {
     if (event.type === 'piece_ready')      { push('新しいピースが着手可能になりました', 'success'); refresh(); }
     if (event.type === 'bottleneck_alert') { push('ボトルネックを検出しました', 'warn'); }
+
+    if (event.type === 'cursor_move') {
+      const { userId, name, x, y, timestamp } = event.payload as {
+        userId: string; name: string; x: number; y: number; timestamp: number;
+      };
+      setRemoteCursors(prev => {
+        const next = new Map(prev);
+        next.set(userId, { userId, name, x, y, updatedAt: timestamp ?? Date.now() });
+        return next;
+      });
+    }
+
+    if (event.type === 'cursor_leave') {
+      const { userId } = event.payload as { userId: string };
+      setRemoteCursors(prev => {
+        const next = new Map(prev);
+        next.delete(userId);
+        return next;
+      });
+    }
   }, [push, refresh]));
+
+  // カーソル位置を 50ms スロットルで送信
+  const lastCursorSendRef = useRef(0);
+  const { screenToFlowPosition } = useReactFlow();
 
   // ── Island rebuild helper ──────────────────────────────────────────────────
   const rebuildIslands = useCallback(() => {
@@ -1625,6 +1653,13 @@ function PuzzleBoardInner() {
         onEdgeClick={onEdgeClick}
         onEdgeContextMenu={onEdgeContextMenu}
         onPaneClick={() => { setSelectedEdgeId(null); setContextMenu(null); setEdgeContextMenu(null); }}
+        onMouseMove={(e: React.MouseEvent) => {
+          const now = Date.now();
+          if (now - lastCursorSendRef.current < 50) return;
+          lastCursorSendRef.current = now;
+          const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+          wsSend({ type: 'cursor_move', x: pos.x, y: pos.y });
+        }}
         nodeTypes={nodeTypes}
         connectionLineType={ConnectionLineType.SmoothStep}
         connectionLineStyle={{ stroke: '#6366f1', strokeWidth: 2, strokeDasharray: '6 3' }}
@@ -1650,6 +1685,9 @@ function PuzzleBoardInner() {
           maskColor="rgba(0,0,0,0.04)"
         />
       </ReactFlow>
+
+      {/* ═══ Remote Cursors overlay ══════════════════════════════════════════ */}
+      <RemoteCursors cursors={remoteCursors} />
 
       {/* ═══ Node context menu ════════════════════════════════════════════════ */}
       {contextMenu && (
