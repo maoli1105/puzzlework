@@ -10,7 +10,7 @@
 // ─ ダブルクリック：ステータスサイクル
 // ============================================================
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import ReactFlow, {
   Node,
@@ -31,6 +31,7 @@ import ReactFlow, {
   ReactFlowProvider,
   Handle,
   Position,
+  useViewport,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { Piece, Connection, Project, PieceStatus, User } from '../../types';
@@ -678,7 +679,10 @@ function computeIslandNodes(
 interface ContextMenu      { x: number; y: number; pieceId: string; piece: Piece; }
 interface EdgeContextMenu  { x: number; y: number; edgeId: string; connType: ConnectionType; }
 
-const nodeTypes = { piece: PieceNode, projectIsland: ProjectIslandNode, projectSummary: ProjectSummaryNode };
+// memo で wrap — ReactFlow の nodeTypes は安定した参照が必要
+const MemoIslandNode  = React.memo(ProjectIslandNode);
+const MemoSummaryNode = React.memo(ProjectSummaryNode);
+const nodeTypes = { piece: PieceNode, projectIsland: MemoIslandNode, projectSummary: MemoSummaryNode };
 
 // ─────────────────────────────────────────────────────────────────────────────
 function PuzzleBoardInner() {
@@ -738,6 +742,12 @@ function PuzzleBoardInner() {
   piecesRef.current    = pieces;
   projectMapRef.current = projectMap;
 
+  // ── Layout cache: skip O(n²) force computation when topology hasn't changed ──
+  const layoutCacheRef = useRef<{
+    key: string;
+    pos: Record<string, { x: number; y: number }>;
+  }>({ key: '', pos: {} });
+
   // ── Data fetch ──
   useEffect(() => {
     refresh();
@@ -794,6 +804,24 @@ function PuzzleBoardInner() {
     });
   }, [showIslands, toggleCollapse]);
 
+  // ── 派生値: pieces/connections が変わった時だけ再計算（useMemo でキャッシュ）─
+  const blockedIds   = useMemo(() => computeBlockedIds(pieces, connections),   [pieces, connections]);
+  const impactScales = useMemo(() => computeImpactScales(pieces),              [pieces]);
+  const criticalIds  = useMemo(() =>
+    showCritical ? computeCriticalPath(pieces, connections) : new Set<string>(),
+    [pieces, connections, showCritical]
+  );
+  const childMap = useMemo(() => {
+    const m: Record<string, string[]> = {};
+    for (const p of pieces) {
+      if (p.parent_id) {
+        if (!m[p.parent_id]) m[p.parent_id] = [];
+        m[p.parent_id].push(p.id);
+      }
+    }
+    return m;
+  }, [pieces]);
+
   // ── Effect 1: データ変更 → グラフ全再構築 ──────────────────────────────────
   useEffect(() => {
     if (pieces.length === 0) return;
@@ -804,19 +832,8 @@ function PuzzleBoardInner() {
         pieces.filter(p => p.assignee_id === ou.user.id).map(p => p.id)
       )
     );
-    const blockedIds   = computeBlockedIds(pieces, connections);
-    const criticalIds  = showCritical ? computeCriticalPath(pieces, connections) : new Set<string>();
     const isBNMode     = viewModeRef.current === 'bottleneck';
-    const impactScales = computeImpactScales(pieces);
-
-    // ── 階層: parent_id ベースの child マップ構築 ────────────────────────
-    const childMap: Record<string, string[]> = {};
-    for (const p of pieces) {
-      if (p.parent_id) {
-        if (!childMap[p.parent_id]) childMap[p.parent_id] = [];
-        childMap[p.parent_id].push(p.id);
-      }
-    }
+    // childMap / blockedIds / impactScales / criticalIds は useMemo でキャッシュ済み
 
     // ── 折りたたみ分離: collapsed vs visible ──────────────────────────────
     const collapsedByProject: Record<string, Piece[]> = {};
@@ -838,11 +855,25 @@ function PuzzleBoardInner() {
     }
 
     // Choose layout strategy (visible pieces only)
-    const autoPos = layoutMode === 'force'
-      ? forceDirectedLayout(visiblePieces, connections.filter(c =>
-          !pieceToSummary[c.from_piece_id] && !pieceToSummary[c.to_piece_id]
-        ), manualPositions.current)
-      : autoLayout(visiblePieces, connections);
+    // force レイアウトはトポロジー（ピースID集合＋接続）が変わった時だけ再計算
+    const visibleConns = connections.filter(c =>
+      !pieceToSummary[c.from_piece_id] && !pieceToSummary[c.to_piece_id]
+    );
+    const topoKey = layoutMode + '|' +
+      visiblePieces.map(p => p.id).sort().join(',') + '|' +
+      visibleConns.map(c => `${c.from_piece_id}>${c.to_piece_id}`).sort().join(',');
+
+    let autoPos: Record<string, { x: number; y: number }>;
+    if (layoutMode === 'force') {
+      if (layoutCacheRef.current.key === topoKey) {
+        autoPos = layoutCacheRef.current.pos; // キャッシュ流用 — O(n²)スキップ
+      } else {
+        autoPos = forceDirectedLayout(visiblePieces, visibleConns, manualPositions.current);
+        layoutCacheRef.current = { key: topoKey, pos: autoPos };
+      }
+    } else {
+      autoPos = autoLayout(visiblePieces, connections);
+    }
 
     // ── Visible piece nodes ───────────────────────────────────────────────
     const newNodes: Node[] = visiblePieces.map(piece => {
@@ -995,8 +1026,9 @@ function PuzzleBoardInner() {
     setEdges([...newEdges, ...parentChildEdges]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pieces, connections, viewMode, layoutMode, bottlenecks, projectMap, workerMap,
-      filterStatus, filterProject, filterSearch, showIslands, showCritical,
-      collapsedProjects, toggleCollapse, expandedPieces, toggleExpand]);
+      filterStatus, filterProject, filterSearch, showIslands,
+      collapsedProjects, toggleCollapse, expandedPieces, toggleExpand,
+      blockedIds, impactScales, criticalIds, childMap]);
 
   // ── Effect 2: ホバー/エッジ選択 → data のみ更新（位置に触れない）──────────
   useEffect(() => {
@@ -1040,6 +1072,20 @@ function PuzzleBoardInner() {
     }));
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hoveredNodeId, selectedEdgeId, isConnecting]);
+
+  // ── Effect 3: LOD — ズーム閾値を越えたときだけ isLOD フラグを更新 ────────────
+  const LOD_THRESHOLD = 0.38;
+  const { zoom } = useViewport();
+  const isLODMode   = zoom < LOD_THRESHOLD;
+  const prevLODRef  = useRef<boolean | null>(null);
+
+  useEffect(() => {
+    if (prevLODRef.current === isLODMode) return; // 閾値をまたいでいなければスキップ
+    prevLODRef.current = isLODMode;
+    setNodes(prev => prev.map(n =>
+      n.type === 'piece' ? { ...n, data: { ...n.data, isLOD: isLODMode } } : n
+    ));
+  }, [isLODMode]);
 
   // ── Keyboard ──────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -1589,6 +1635,7 @@ function PuzzleBoardInner() {
         minZoom={0.15}
         maxZoom={2.5}
         elevateNodesOnSelect={false}
+        onlyRenderVisibleElements
       >
         <Background variant={BackgroundVariant.Dots} gap={28} size={1.2} color="var(--border)" />
         <Controls style={{ background: 'var(--surface)', borderRadius: 'var(--r-md)', border: '1px solid var(--border)' }} />

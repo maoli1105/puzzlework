@@ -112,12 +112,64 @@ interface Props {
     isExpanded?: boolean;      // are children currently shown?
     onToggleExpand?: () => void;
     isChild?: boolean;         // is this piece a child of another?
+    // ─ LOD ─
+    isLOD?: boolean;           // true when zoom < LOD_THRESHOLD → simplified render
   };
   selected: boolean;
 }
 
+// ─── LOD (simplified box at low zoom) ───────────────────────────────────────
+const STATUS_LOD_BG: Record<PieceStatus, string> = {
+  locked:      '#BDB7A3',
+  ready:       '#7EB87A',
+  in_progress: '#6B9EC8',
+  done:        '#C8C4BA',
+};
+const STATUS_LOD_BORDER: Record<PieceStatus, string> = {
+  locked:      '#8E8875',
+  ready:       '#3D6B39',
+  in_progress: '#3D6080',
+  done:        '#9E9482',
+};
+function PieceNodeLOD({ data, selected }: Props) {
+  const { piece, impactScale = 1, isDimmed = false, isBlocked, isCritical } = data;
+  const bg     = STATUS_LOD_BG[piece.status];
+  const border = STATUS_LOD_BORDER[piece.status];
+  const scale  = impactScale;
+  const glow   = isCritical ? `0 0 10px 3px #F59E0B88` :
+                 isBlocked  ? `0 0 10px 3px #F9731688` : undefined;
+  return (
+    <div style={{
+      width:  SVG_W * scale,
+      height: SVG_H * scale,
+      background: bg,
+      borderRadius: 8,
+      border: `2px solid ${border}`,
+      boxShadow: selected ? `0 0 0 2px #6366f1, ${glow ?? ''}` : glow,
+      opacity: isDimmed ? 0.25 : 1,
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      padding: '4px 8px', overflow: 'hidden',
+      transition: 'opacity 0.2s',
+    }}>
+      <span style={{
+        fontSize: 9, fontWeight: 700, color: '#fff',
+        textAlign: 'center', overflow: 'hidden',
+        textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        textShadow: '0 1px 2px rgba(0,0,0,0.4)',
+        letterSpacing: '-0.01em',
+        width: '100%',
+      }}>
+        {piece.title.replace(/^【.+?】/, '')}
+      </span>
+    </div>
+  );
+}
+
 // ─── PieceNode ────────────────────────────────────────────────────────────────
 function PieceNode({ data, selected }: Props) {
+  // LOD: at low zoom render a fast simplified box instead of full SVG
+  if (data.isLOD) return <PieceNodeLOD data={data} selected={selected} />;
+
   const {
     piece, isConnecting, isBottleneck, isBlocked, isCritical,
     impactScale = 1,
