@@ -23,82 +23,80 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
 ## ✅ 実装完了（全フェーズ）
 
 ### Phase 1 — Board基盤強化
-- **ハンドル Left/Right** (PieceNode.tsx) — ジグソーのタブ形状に合わせた接続
+- **ハンドル Left/Right** — ジグソーのタブ形状に合わせた接続
 - **localStorage位置保存** — `pz_board_positions_v2` キーで永続化
 - **エッジ右クリックメニュー** — sequential/parallel/conditional 切替 + 削除
-- **接続タイプ凡例** — 右パネルに表示
-- **backend** — `PATCH /pieces/connections/:id` 追加
 
 ### Phase 1b — Project Islands + Cascade Glow
 - **ProjectIslandNode** — 同プロジェクトのピースを色付き背景で囲む
-- **Cascade Glow** — locked上流の下流ピースがオレンジ発光(⛓)
-- **🏝ボタン / Iキー** — 島のON/OFF
+- **Cascade Glow** — locked上流の下流ピースがオレンジ発光
 
 ### Phase 2 — 重力レイアウト + インパクトサイズ
-- **Force-Directed Layout** — ⚛重力/⋯DAGトグル、Fruchterman-Reingold 120iter
-- **Impact Scale** — business_impact → 0.85〜1.35倍のピースサイズ
+- **Force-Directed Layout** — ⚛重力/⋯DAGトグル
+- **Impact Scale** — business_impact → ピースサイズ変動
 
 ### Phase 3 — ガントチャート
-- **GanttView.tsx** — プロジェクト/担当者グループ、TODAY線、依存矢印
-- ツールバー「ガント」ボタンで切替、バークリックで詳細パネル
+- **GanttView.tsx** — プロジェクト/担当者グループ、TODAY線
 
 ### Phase 4 — クリティカルパス + スプリントプランナー
-- **computeCriticalPath()** — 最長依存チェーンを黄金色ボーダーで表示（⚡CPボタン）
-- **SprintPlannerPanel.tsx** — 依存順・優先度順で候補表示、担当割当、一括スプリント開始
-- 「📋 Sprint」ボタン、均等割当ボタン、担当者負荷バー
+- **computeCriticalPath()** — 最長依存チェーン可視化
+- **SprintPlannerPanel.tsx** — 依存順・優先度順候補、担当割当
 
 ### Phase 5 — ガントシードデータ投入
-- **seed_gantt.sql** — 15製品×5工程=75ピース、担当者5名、接続60件をDBに投入
-  - 製品: サンドステッパー/リッチライズプロテイン/ルームランナー/リストラップ/バトルロープEvo/スピンバイクAir/ネックマッサージャー/ST144〜ST120
-  - 担当者: 小林・牧（コンテンツ）、黒島・大庭・東條（デザイン）
-  - 工程チェーン: 仕様確認→デザイン→LP→プレスリリース→外部SNS
-- **POST /pieces/bulk 拡張** — assignee_id / start_date / status / business_impact 対応
+- 15製品×5工程=75ピース、担当者5名をDB投入
 
-### Phase 6 — プロジェクト折りたたみ ★最新
-- **▣ 全折ボタン** — 75ピース → 15枚のサマリーカードに一括集約
-- **島ラベルクリック** — プロジェクト単位で折りたたみ/展開トグル
-- **ProjectSummaryNode** — 進捗バー・ステータスバッジ（完了/進行中/着手可/ロック）・次の締切タスクを表示
-- **エッジ自動リマップ** — 折りたたんだピース→サマリーノードに付け替え、重複除去
-- **サマリーノード位置保存** — ドラッグした位置をlocalStorageに永続化
+### Phase 6 — プロジェクト折りたたみ
+- **▣ 全折ボタン** — 75ピース → 15枚サマリーカード
+- **ProjectSummaryNode** — 進捗バー・ステータスバッジ
+- **エッジ自動リマップ** — 折りたたんだピース→サマリーノード
+
+### Phase 7A — ピース階層（Epic→Task→Sub-task）✅ 完了
+- **DB**: `pieces.parent_id uuid REFERENCES pieces(id)` カラム追加済み
+- **backend**: `createPiece` で `parent_id` 受け取り・保存
+- **types**: `Piece.parent_id: string | null` 追加
+- **PieceNode**: 子インジケーターバー（左端の縦線）+ 展開/折りたたみピルボタン
+- **PuzzleBoard**: `childMap`・`expandedPieces`・`visiblePieces`フィルタ・子自動配置・点線親子エッジ
+- **PieceCreatePanel**: 親ピース選択セレクタ（ルートピースのみ、孫は作れない）
+- コミット: `7947094`
+
+### Phase 7B — ワークロードリング ✅ 完了
+- **WorkloadRingPanel.tsx**: `viewMode === 'load'` でSVGドーナツリング
+- ワーカー別ステータス内訳（in_progress/ready/locked/done）、負荷レベルバッジ
+- コミット: `bed5ea6`
+
+### Phase 7C — 完了予測（velocity ETA）✅ 完了
+- 右パネルに「完了予測」セクション追加
+- `velocityBySkill × skill_tags` でETA残日数計算
+- `started_at`からの経過日数を考慮した残日数表示
+- コミット: `bed5ea6`（7Bと同一コミット）
+
+### Phase 7D — AI Sprint Enhancement ✅ 完了
+- **backend**: `POST /ai/suggest-sprint` エンドポイント追加
+  - Anthropic API でスキルマッチング×負荷分散の最適割り当て提案
+  - APIキー未設定時はルールベースフォールバック
+- **frontend**: SprintPlannerPanel に「✦ AI」ボタン追加
+  - 選択ピースに対してAI割り当て提案を取得→`assignMap`に反映
+- **api.ts**: `ai.suggestSprint()` 追加
 
 ---
 
 ## 🔲 次にやること（優先順）
-
-### A. ピース階層 (Epic → Task → Sub-task) ★最重要
-- **backend**: `pieces` テーブルに `parent_id uuid` カラム追加
-  ```sql
-  ALTER TABLE pieces ADD COLUMN parent_id uuid REFERENCES pieces(id);
-  ```
-- **frontend types**: `Piece` に `parent_id: string | null` 追加
-- **PuzzleBoard**: 親ピースをダブルクリック → 子ピースが展開（accordion）
-- **PieceNode**: 子ピース数バッジ表示、折りたたみ/展開ボタン
-- **PieceCreatePanel**: 親ピース選択セレクタ追加
-
-### B. ワークロードリング
-- 各メンバーのピース数・進捗をリング表示（ボード左下 or 右パネル下部）
-- `viewMode === 'load'` 時に担当者ごとのリング+負荷率を全面表示
-- データ: in_progress ピース数 / 全アサイン数 / 平均進捗%
-
-### C. 完成予測ウェーブ
-- 現在のペースで全ピース完了する推定日を右パネルに表示
-- 計算: `完了数/経過日数 × 残ピース数`
-- 直近7日の done 数からベロシティ算出
-
-### D. AI提案強化
-- `POST /ai/suggest-sprint` バックエンドエンドポイント追加
-- 現在の SprintPlanner はフロントのみでソート
-- AI版: skill_tags × worker.skills でマッチング、business_impact 最大化
-- OpenAI/Claude API で sprint 推薦文を生成
 
 ### E. リアルタイム複数人カーソル
 - WebSocketで他ユーザーのカーソル位置を共有
 - Figmaスタイルのカラー付きカーソルとアバター
 
 ### F. サマリーカードの改善
-- 現在: クリックで展開のみ
-- 追加: ホバーでポップアップ詳細（担当者アバター・ブロック状況）
-- 追加: サマリーカードから直接ステータス一括変更
+- ホバーでポップアップ詳細（担当者アバター・ブロック状況）
+- サマリーカードから直接ステータス一括変更
+
+### G. PieceDetailPanel 親子関係UI
+- 詳細パネルで子ピース一覧を表示
+- 子ピースのステータスを一括変更
+
+### H. ボードパフォーマンス改善
+- 75ピース以上での描画最適化（仮想化・LOD）
+- キャンバス外のノードをレンダリングしない
 
 ---
 
@@ -106,19 +104,19 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
 
 | ファイル | 役割 |
 |---|---|
-| `frontend/src/components/board/PuzzleBoard.tsx` | メインボード（ReactFlow）— 全機能統合 |
-| `frontend/src/components/board/PieceNode.tsx` | ピースSVGノード（ハンドル/グロー/クリティカル） |
+| `frontend/src/components/board/PuzzleBoard.tsx` | メインボード — 全機能統合 |
+| `frontend/src/components/board/PieceNode.tsx` | ピースSVGノード（階層インジケーター含む） |
+| `frontend/src/components/board/WorkloadRingPanel.tsx` | 負荷ビュー（loadモード） |
+| `frontend/src/components/board/SprintPlannerPanel.tsx` | スプリント計画（AI割当ボタン追加） |
+| `frontend/src/components/board/PieceCreatePanel.tsx` | ピース作成（親ピース選択あり） |
 | `frontend/src/components/board/GanttView.tsx` | ガントチャートビュー |
-| `frontend/src/components/board/SprintPlannerPanel.tsx` | スプリント計画パネル |
-| `frontend/src/services/api.ts` | APIクライアント |
-| `backend/src/controllers/pieceController.ts` | ピースCRUD |
-| `backend/src/routes/pieces.ts` | ルーティング（bulk含む） |
-| `backend/scripts/seed_gantt.sql` | ガントデータ投入SQL（再実行可） |
-| `backend/src/scripts/seed_gantt.ts` | 同上 TypeScript版 |
+| `frontend/src/services/api.ts` | APIクライアント（ai.suggestSprint含む） |
+| `frontend/src/types/index.ts` | 型定義（parent_id追加済み） |
+| `backend/src/controllers/pieceController.ts` | ピースCRUD（parent_id対応） |
+| `backend/src/routes/ai.ts` | AIルート（suggest-sprint追加） |
 
 ## DB確認コマンド
 ```bash
-# ピース・プロジェクト・ユーザー数確認
 psql postgresql://mouritetsuya@localhost:5432/puzzlework -c "
 SELECT
   (SELECT COUNT(*) FROM pieces) AS pieces,
@@ -126,9 +124,6 @@ SELECT
   (SELECT COUNT(*) FROM users) AS users,
   (SELECT COUNT(*) FROM connections) AS connections;
 "
-
-# 担当者一覧
-psql postgresql://mouritetsuya@localhost:5432/puzzlework -c "SELECT name, email, role FROM users ORDER BY role, name;"
 ```
 
 ## デザイン方針
@@ -136,7 +131,6 @@ psql postgresql://mouritetsuya@localhost:5432/puzzlework -c "SELECT name, email,
 - **バルミューダ/I-NE風** — 絵文字最小限、余白重視、金属質感
 - **CSS変数**: `--bg`, `--surface`, `--border`, `--accent`, `--accent-sub`, `--text-1/2/3`
 - **ピースサイズ**: W=196, H=132, TAB=20, SVG_W=216, SVG_H=152
-- **サマリーカード**: W=228, H=122
 
 ## キーボードショートカット
 | キー | 動作 |
