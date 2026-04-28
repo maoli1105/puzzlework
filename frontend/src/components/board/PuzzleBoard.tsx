@@ -33,7 +33,7 @@ import ReactFlow, {
   Position,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Piece, Connection, Project, PieceStatus } from '../../types';
+import { Piece, Connection, Project, PieceStatus, User } from '../../types';
 import { pieces as pieceApi, projects as projectApi, users as usersApi } from '../../services/api';
 import { usePieces } from '../../hooks/usePieces';
 import { useWebSocket } from '../../hooks/useWebSocket';
@@ -44,6 +44,7 @@ import PieceCreatePanel from './PieceCreatePanel';
 import PieceDetailPanel from './PieceDetailPanel';
 import GanttView from './GanttView';
 import SprintPlannerPanel from './SprintPlannerPanel';
+import WorkloadRingPanel from './WorkloadRingPanel';
 import { ConnectionType } from '../../types';
 
 // ─── Global styles ────────────────────────────────────────────────────────────
@@ -558,12 +559,14 @@ function PuzzleBoardInner() {
   const [edgeContextMenu, setEdgeContextMenu] = useState<EdgeContextMenu | null>(null);
   const [projectMap,      setProjectMap]      = useState<Record<string, Project>>({});
   const [workerMap,       setWorkerMap]       = useState<Record<string, { name: string }>>({});
+  const [workers,         setWorkers]         = useState<User[]>([]);
   const [showIslands,       setShowIslands]       = useState(true);
   const [layoutMode,        setLayoutMode]        = useState<'dag' | 'force'>('dag');
   const [showCritical,      setShowCritical]      = useState(false);
   const [sprintOpen,        setSprintOpen]        = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
   const [expandedPieces,    setExpandedPieces]    = useState<Set<string>>(new Set());
+  const [velocityBySkill,   setVelocityBySkill]   = useState<{ skill: string; avg_days: number | null }[]>([]);
 
   const toggleCollapse = useCallback((projectId: string) => {
     setCollapsedProjects(prev => {
@@ -602,8 +605,14 @@ function PuzzleBoardInner() {
       .then((ps: Project[]) => setProjectMap(Object.fromEntries(ps.map(p => [p.id, p]))))
       .catch(() => {});
     usersApi.workers()
-      .then((ws: { id: string; name: string }[]) =>
-        setWorkerMap(Object.fromEntries(ws.map(w => [w.id, { name: w.name }])))
+      .then((ws: User[]) => {
+        setWorkerMap(Object.fromEntries(ws.map(w => [w.id, { name: w.name }])));
+        setWorkers(ws);
+      })
+      .catch(() => {});
+    pieceApi.getVelocityInsights()
+      .then((d: { by_skill: { skill: string; avg_days: number | null }[] }) =>
+        setVelocityBySkill(d.by_skill ?? [])
       )
       .catch(() => {});
   }, [refresh]);
@@ -884,8 +893,8 @@ function PuzzleBoardInner() {
     function close(e: MouseEvent) {
       const n  = document.getElementById('piece-context-menu');
       const ed = document.getElementById('edge-context-menu');
-      if (n  && !n.contains(e.target as Node))  setContextMenu(null);
-      if (ed && !ed.contains(e.target as Node)) setEdgeContextMenu(null);
+      if (n  && !n.contains(e.target as HTMLElement))  setContextMenu(null);
+      if (ed && !ed.contains(e.target as HTMLElement)) setEdgeContextMenu(null);
     }
     document.addEventListener('mousedown', close);
     return () => document.removeEventListener('mousedown', close);
@@ -1011,6 +1020,18 @@ function PuzzleBoardInner() {
   ).length;
   const visibleCount    = nodes.filter(n => n.type === 'piece' && !(n.style as { pointerEvents?: string } | undefined)?.pointerEvents).length;
   const hasFilter       = !!(filterStatus || filterProject || filterSearch);
+
+  // ── Phase 7C: velocity-based ETA ──────────────────────────────────────────
+  function etaForPiece(piece: Piece): number | null {
+    if (!piece.skill_tags?.length || !velocityBySkill.length) return null;
+    const matched = velocityBySkill.filter(v => piece.skill_tags.includes(v.skill) && v.avg_days != null);
+    if (!matched.length) return null;
+    const avg = matched.reduce((s, v) => s + (v.avg_days ?? 0), 0) / matched.length;
+    const startedAt = piece.started_at ? new Date(piece.started_at) : new Date(piece.created_at);
+    const elapsed = (Date.now() - startedAt.getTime()) / (1000 * 60 * 60 * 24);
+    return Math.max(0, Math.round(avg - elapsed));
+  }
+  const inProgressPieces = pieces.filter(p => p.status === 'in_progress').slice(0, 5);
 
   return (
     <div
@@ -1274,6 +1295,44 @@ function PuzzleBoardInner() {
             選択中 — <b>Del</b> or 右クリック
           </div>
         )}
+
+        {/* ── Phase 7C: 完了予測 ─────────────────────────────────── */}
+        {inProgressPieces.length > 0 && velocityBySkill.length > 0 && (
+          <>
+            <div style={{ height: 1, background: 'var(--border)', margin: '8px 0' }} />
+            <div style={{ color: 'var(--text-3)', fontWeight: 600, fontSize: 10, letterSpacing: '0.06em', marginBottom: 5, textTransform: 'uppercase' }}>
+              完了予測
+            </div>
+            {inProgressPieces.map(p => {
+              const eta = etaForPiece(p);
+              const overdue = p.due_date ? new Date() > new Date(p.due_date) : false;
+              return (
+                <div key={p.id} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 8, marginBottom: 4,
+                }}>
+                  <span style={{
+                    fontSize: 9.5, color: 'var(--text-2)',
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                    flex: 1,
+                  }} title={p.title}>
+                    {p.title.length > 18 ? p.title.slice(0, 18) + '…' : p.title}
+                  </span>
+                  {eta !== null ? (
+                    <span style={{
+                      fontSize: 9, fontWeight: 700, whiteSpace: 'nowrap',
+                      color: eta === 0 ? '#059669' : overdue ? '#EF4444' : eta <= 2 ? '#F59E0B' : 'var(--text-3)',
+                    }}>
+                      {eta === 0 ? '本日' : `残${eta}日`}
+                    </span>
+                  ) : (
+                    <span style={{ fontSize: 9, color: 'var(--text-3)' }}>—</span>
+                  )}
+                </div>
+              );
+            })}
+          </>
+        )}
       </div>
 
       {/* ─ Connecting hint ─ */}
@@ -1321,6 +1380,11 @@ function PuzzleBoardInner() {
         </div>
       )}
 
+      {/* ═══ Workload Ring Panel (load mode) ════════════════════════════════ */}
+      {viewMode === 'load' && (
+        <WorkloadRingPanel pieces={pieces} workers={workers} />
+      )}
+
       {/* ═══ ReactFlow ════════════════════════════════════════════════════════ */}
       <ReactFlow
         nodes={nodes}
@@ -1356,7 +1420,7 @@ function PuzzleBoardInner() {
             if (n.type === 'projectIsland') return 'transparent';
             if (n.type === 'projectSummary') return (n.data as SummaryData)?.color ?? '#6366f1';
             const piece = n.data?.piece as Piece | undefined;
-            return { locked: '#ddd8cc', ready: '#bbf7d0', in_progress: '#bfdbfe', done: '#e5e7eb' }[piece?.status ?? ''] ?? '#e2e8f0';
+            return ({ locked: '#ddd8cc', ready: '#bbf7d0', in_progress: '#bfdbfe', done: '#e5e7eb' } as Record<string, string>)[piece?.status ?? ''] ?? '#e2e8f0';
           }}
           style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--r-md)', bottom: 60 }}
           maskColor="rgba(0,0,0,0.04)"
