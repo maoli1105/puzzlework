@@ -140,10 +140,19 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
   - ピース相対位置を `f:{id}` キーで永続保存
   - 折りたたみ ↔ 展開で位置が予測可能になった
 
+### Phase H — ボードパフォーマンス改善 + バックエンドバグ修正 ✅ 完了（コミット `f74b555`）
+- **ai.ts Anthropicクライアント遅延初期化** — モジュール読み込み時に `new Anthropic()` を呼ぶとAPIキー未設定でハング → `getClient()` 関数で遅延生成に変更
+- **websocket/index.ts pool import修正** — `import pool from '../db'`（default・誤）→ `import { pool } from '../db'`（named・正）
+- **PieceNode カスタムmemo** — `arePiecePropsEqual` コンパレータで視覚フィールド未変更時の再レンダーをスキップ
+- **PuzzleBoard effectスプリット** — filter/workerMap/bottleneck/blocked/critical/impactを軽量別effectに分離。フィルター入力のたびに全レイアウト再計算しなくなった
+
+### ログイン情報
+- **admin**: `admin@puzzle.co.jp` / `password123`（パスワードリセット済み）
+- workers: `maki@puzzle.co.jp` など / パスワードは別途確認要
+
 ## 🔲 次にやること（優先順）
 
 - ダッシュボードのバックエンドAPI未実装チェック（`GET /pieces/org-health` 等は実装済み確認要）
-- フォルダ島をドラッグしたとき中のピースも一緒に動く実装（現状は島だけ移動）
 - Slack通知の定期実行cron
 - メンバー招待時のメール送信
 
