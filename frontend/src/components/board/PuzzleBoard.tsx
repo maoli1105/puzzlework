@@ -47,6 +47,7 @@ import GanttView from './GanttView';
 import SprintPlannerPanel from './SprintPlannerPanel';
 import WorkloadRingPanel from './WorkloadRingPanel';
 import RemoteCursors from './RemoteCursors';
+import TemplatePanel from './TemplatePanel';
 import { ConnectionType } from '../../types';
 
 // ─── Global styles ────────────────────────────────────────────────────────────
@@ -697,6 +698,7 @@ function PuzzleBoardInner() {
   const [filterProject,   setFilterProject]   = useState('');
   const [filterSearch,    setFilterSearch]    = useState('');
   const [filterOpen,      setFilterOpen]      = useState(false);
+  const [templateOpen,    setTemplateOpen]    = useState(false);
   const [hoveredNodeId,   setHoveredNodeId]   = useState<string | null>(null);
   const [selectedEdgeId,  setSelectedEdgeId]  = useState<string | null>(null);
   const [contextMenu,     setContextMenu]     = useState<ContextMenu | null>(null);
@@ -1435,6 +1437,19 @@ function PuzzleBoardInner() {
           📋 Sprint
         </button>
 
+        {/* Template panel */}
+        <button
+          onClick={() => setTemplateOpen(true)}
+          title="プロジェクトテンプレート"
+          style={{
+            padding: '6px 12px', borderRadius: 8, border: 'none',
+            background: templateOpen ? 'var(--accent-sub)' : 'transparent',
+            color:      templateOpen ? 'var(--accent)' : 'var(--text-3)',
+            cursor: 'pointer', fontSize: 12, fontWeight: templateOpen ? 700 : 400,
+          }}>
+          🗂 テンプレ
+        </button>
+
         <button onClick={() => setCreateOpen(true)} style={{
           padding: '6px 18px', borderRadius: 8, border: 'none',
           background: 'var(--accent)', color: '#fff',
@@ -1793,6 +1808,12 @@ function PuzzleBoardInner() {
         onClose={() => setSelectedPiece(null)}
         onUpdated={() => { refresh(); setSelectedPiece(null); push('更新しました', 'success'); }}
         allPieces={pieces}
+      />
+      <TemplatePanel
+        open={templateOpen}
+        onClose={() => setTemplateOpen(false)}
+        onCreated={() => { refresh(); push('テンプレートからプロジェクトを作成しました', 'success'); setTemplateOpen(false); }}
+        projects={Object.values(projectMap)}
       />
     </div>
   );
