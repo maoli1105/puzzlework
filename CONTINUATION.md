@@ -99,9 +99,17 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
 - WebSocketで他ユーザーのカーソル位置を共有
 - Figmaスタイルのカラー付きカーソルとアバター
 
-### H. ボードパフォーマンス改善
-- 75ピース以上での描画最適化（仮想化・LOD）
-- キャンバス外のノードをレンダリングしない
+### Phase H — ボードパフォーマンス改善 ✅ 完了
+- **forceLayout キャッシュ** — トポロジー変化時のみ O(n²)再計算。ステータス変更では計算スキップ（≈10× 高速化）
+- **`onlyRenderVisibleElements`** — viewport外ノードをDOMから除去
+- **LOD** — zoom < 0.38 でシンプルなカラーボックス描画。`PieceNodeLOD` コンポーネント追加
+- **useMemo** — blockedIds / impactScales / criticalIds / childMap をキャッシュ
+- **React.memo** — ProjectIslandNode / ProjectSummaryNode をラップ
+- コミット: `4220989`
+
+---
+
+## 🔲 次にやること（優先順）
 
 ---
 
