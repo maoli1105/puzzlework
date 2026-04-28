@@ -133,12 +133,19 @@ cd /Users/mouritetsuya/Documents/puzzlework && git log --oneline
 
 ---
 
+### ピース削除 + フォルダ式展開 ✅ 完了（コミット `398ad8d`）
+- **ピース削除**: `DELETE /pieces/:id`（接続・コメント・ログ一括削除）、右クリックメニュー「🗑 削除」、PieceDetailPanel の Trash2 ボタン
+- **フォルダ式展開**: プロジェクトを開くと固定サイズ枠（draggable island）の中にピースが3列グリッドで並ぶ
+  - ReactFlow の `parentNode` + `extent:'parent'` で真の包含関係
+  - ピース相対位置を `f:{id}` キーで永続保存
+  - 折りたたみ ↔ 展開で位置が予測可能になった
+
 ## 🔲 次にやること（優先順）
 
 - ダッシュボードのバックエンドAPI未実装チェック（`GET /pieces/org-health` 等は実装済み確認要）
+- フォルダ島をドラッグしたとき中のピースも一緒に動く実装（現状は島だけ移動）
 - Slack通知の定期実行cron
 - メンバー招待時のメール送信
-- ビュー別にツールバーを出し分け（ダッシュボードモードでは不要なボタンを隠す）
 
 ---
 
