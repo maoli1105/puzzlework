@@ -132,12 +132,34 @@ export default function WorkerShell({ children }: { children: React.ReactNode })
     return () => document.removeEventListener('mousedown', handleClick);
   }, [notifOpen]);
 
+  function activityActionText(event_type: string, new_value: string | null): string {
+    const STATUS_JA: Record<string, string> = {
+      todo: 'ToDo', in_progress: '進行中', review: 'レビュー中', done: '完了', locked: 'ブロック中',
+    };
+    switch (event_type) {
+      case 'status_changed':    return `を「${STATUS_JA[new_value ?? ''] ?? new_value}」に変更しました`;
+      case 'assigned':          return 'にアサインされました';
+      case 'auto_promoted':     return 'を自動昇格しました';
+      case 'blocker_reported':  return 'でブロッカーを報告しました';
+      case 'created':           return 'を作成しました';
+      case 'field_updated':     return 'を更新しました';
+      default:                  return `を更新しました（${event_type}）`;
+    }
+  }
+
   async function loadActivity() {
     if (activityLoading) return;
     setActivityLoading(true);
     try {
-      const data = await pieceApi.getActivity(20);
-      setActivities(data ?? []);
+      const raw = await pieceApi.getActivity(20);
+      const mapped = (raw ?? []).map((r: { piece_id: string; piece_title: string; user_name: string; event_type: string; new_value: string | null; created_at: string }) => ({
+        piece_id:    r.piece_id,
+        piece_title: r.piece_title,
+        actor_name:  r.user_name ?? '不明',
+        action:      activityActionText(r.event_type, r.new_value),
+        created_at:  r.created_at,
+      }));
+      setActivities(mapped);
     } catch { /* ignore */ }
     finally { setActivityLoading(false); }
   }

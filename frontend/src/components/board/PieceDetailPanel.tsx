@@ -627,14 +627,66 @@ function TimeLogSection({ pieceId }: { pieceId: string }) {
   );
 }
 
+function renderCommentContent(content: string) {
+  const parts = content.split(/(@\S+)/g);
+  return parts.map((part, i) =>
+    part.startsWith('@')
+      ? <span key={i} style={{ color: 'var(--accent)', fontWeight: 600 }}>{part}</span>
+      : <span key={i}>{part}</span>
+  );
+}
+
 function CommentsSection({ pieceId }: { pieceId: string }) {
   const [comments, setComments] = useState<{ id: string; content: string; user_name: string; created_at: string }[]>([]);
   const [newComment, setNewComment] = useState('');
   const [posting, setPosting] = useState(false);
+  const [members, setMembers] = useState<{ id: string; name: string }[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     pieceApi.getComments(pieceId).then(setComments).catch(() => {});
+    userApi.workers().then((ws: { id: string; name: string }[]) => setMembers(ws)).catch(() => {});
   }, [pieceId]);
+
+  const mentionCandidates = mentionQuery !== null
+    ? members.filter(m => m.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 6)
+    : [];
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value;
+    setNewComment(val);
+    const cursor = e.target.selectionStart ?? val.length;
+    const textBefore = val.slice(0, cursor);
+    const atMatch = textBefore.match(/@(\S*)$/);
+    if (atMatch) {
+      setMentionQuery(atMatch[1]);
+      setMentionIndex(0);
+    } else {
+      setMentionQuery(null);
+    }
+  }
+
+  function insertMention(name: string) {
+    const cursor = inputRef.current?.selectionStart ?? newComment.length;
+    const before = newComment.slice(0, cursor);
+    const after = newComment.slice(cursor);
+    const replaced = before.replace(/@(\S*)$/, `@${name} `);
+    setNewComment(replaced + after);
+    setMentionQuery(null);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (mentionQuery !== null && mentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => Math.min(i + 1, mentionCandidates.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setMentionIndex(i => Math.max(i - 1, 0)); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionCandidates[mentionIndex].name); return; }
+      if (e.key === 'Escape')    { setMentionQuery(null); return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && mentionQuery === null) { e.preventDefault(); handlePost(); }
+  }
 
   async function handlePost() {
     if (!newComment.trim()) return;
@@ -659,21 +711,47 @@ function CommentsSection({ pieceId }: { pieceId: string }) {
               <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-2)' }}>{c.user_name}</span>
               <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{new Date(c.created_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
             </div>
-            <div style={{ fontSize: 11, color: 'var(--text-1)', lineHeight: 1.5 }}>{c.content}</div>
+            <div style={{ fontSize: 11, color: 'var(--text-1)', lineHeight: 1.5 }}>{renderCommentContent(c.content)}</div>
           </div>
         ))}
       </div>
-      <div style={{ display: 'flex', gap: 6 }}>
-        <input
-          value={newComment}
-          onChange={e => setNewComment(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handlePost(); } }}
-          placeholder="コメントを追加..."
-          style={{ ...selectStyle, flex: 1, fontSize: 11 }}
-        />
-        <button onClick={handlePost} disabled={posting || !newComment.trim()} style={{ padding: '6px 12px', background: 'var(--text-1)', color: '#FAFAF8', border: 'none', borderRadius: 'var(--r-sm)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-          {posting ? '...' : '投稿'}
-        </button>
+      <div style={{ position: 'relative' }}>
+        {mentionQuery !== null && mentionCandidates.length > 0 && (
+          <div style={{
+            position: 'absolute', bottom: '100%', left: 0, right: 0, marginBottom: 4,
+            background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 'var(--r-sm)', boxShadow: '0 4px 16px rgba(0,0,0,0.12)',
+            zIndex: 100, overflow: 'hidden',
+          }}>
+            {mentionCandidates.map((m, i) => (
+              <div
+                key={m.id}
+                onMouseDown={e => { e.preventDefault(); insertMention(m.name); }}
+                style={{
+                  padding: '7px 12px', fontSize: 12, cursor: 'pointer',
+                  background: i === mentionIndex ? 'var(--accent-sub)' : 'transparent',
+                  color: i === mentionIndex ? 'var(--accent)' : 'var(--text-1)',
+                  fontWeight: i === mentionIndex ? 600 : 400,
+                }}
+              >
+                @{m.name}
+              </div>
+            ))}
+          </div>
+        )}
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            ref={inputRef}
+            value={newComment}
+            onChange={handleChange}
+            onKeyDown={handleKeyDown}
+            placeholder="コメントを追加... （@名前でメンション）"
+            style={{ ...selectStyle, flex: 1, fontSize: 11 }}
+          />
+          <button onClick={handlePost} disabled={posting || !newComment.trim()} style={{ padding: '6px 12px', background: 'var(--text-1)', color: '#FAFAF8', border: 'none', borderRadius: 'var(--r-sm)', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+            {posting ? '...' : '投稿'}
+          </button>
+        </div>
       </div>
     </div>
   );
