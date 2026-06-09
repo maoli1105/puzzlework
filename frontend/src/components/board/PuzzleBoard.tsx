@@ -541,6 +541,7 @@ interface IslandData {
   onCreatePiece?: () => void;  // "+" ボタンでフォルダ内にピース作成
   onTidy?: () => void;          // 整列ボタン: ピースの手動位置をリセットして再レイアウト
   onDeleteConnections?: () => void;  // フォルダ内の全接続を一括削除
+  onArchive?: () => void;            // アーカイブボタン: プロジェクトを archived に変更
   isPinned?: boolean;           // ★注目フォルダ
   onTogglePin?: () => void;
   doneZoneY?: number;           // 完了パズル区間のY座標 (undefined = 非表示)
@@ -1337,16 +1338,35 @@ function ProjectIslandNodeV2({ data }: { data: IslandData }) {
       >
         {/* カウント / COMPLETEバッジ */}
         {isAllDone ? (
-          <span style={{
-            fontSize:      9,
-            fontWeight:    700,
-            color:         col,
-            opacity:       0.75,
-            letterSpacing: '0.06em',
-            border:        `1px solid ${col}55`,
-            borderRadius:  3,
-            padding:       '2px 5px',
-          }}>COMPLETE</span>
+          <>
+            <span style={{
+              fontSize:      9,
+              fontWeight:    700,
+              color:         col,
+              opacity:       0.75,
+              letterSpacing: '0.06em',
+              border:        `1px solid ${col}55`,
+              borderRadius:  3,
+              padding:       '2px 5px',
+            }}>COMPLETE</span>
+            {data.onArchive && (
+              <div
+                onClick={e => { e.stopPropagation(); data.onArchive?.(); }}
+                title="アーカイブ（完了済みプロジェクトを保管）"
+                style={{
+                  width: 26, height: 26,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: 'pointer', opacity: 0.55, borderRadius: 3,
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 13 13" fill="none">
+                  <rect x="1" y="1" width="11" height="3.5" rx="1" stroke={col} strokeWidth="1.3"/>
+                  <path d="M2 4.5v6.5a1 1 0 001 1h7a1 1 0 001-1V4.5" stroke={col} strokeWidth="1.3"/>
+                  <path d="M4.5 7.5h4" stroke={col} strokeWidth="1.3" strokeLinecap="round"/>
+                </svg>
+              </div>
+            )}
+          </>
         ) : (
           <span style={{
             fontSize:    14,
@@ -2735,6 +2755,10 @@ function PuzzleBoardInner() {
 
   const manualPositions       = useRef<Record<string, { x: number; y: number }>>(loadSavedPositions());
   const initialCollapseApplied = useRef(false); // 初回ロード時の全折りを1回だけ適用
+  // 工房→ボード遷移: コンポーネント初期化時点でURLパラメータを取得（searchParamsクリア前）
+  const initialProjectIdRef = useRef<string | null>(
+    new URLSearchParams(window.location.search).get('project')
+  );
   // keep latest pieces/projectMap/connections accessible inside callbacks without stale closure
   const piecesRef       = useRef(pieces);
   const projectMapRef   = useRef(projectMap);
@@ -2770,13 +2794,19 @@ function PuzzleBoardInner() {
         setProjectMap(Object.fromEntries(ps.map(p => [p.id, p])));
         // 初回ロード時のみ全プロジェクトを折りたたむ（?project= で指定されたものは除外）
         if (!initialCollapseApplied.current && ps.length > 0) {
-          const targetProjectId = new URLSearchParams(window.location.search).get('project');
+          const targetProjectId = initialProjectIdRef.current;
           const collapsed = new Set(ps.map(p => p.id));
           if (targetProjectId) collapsed.delete(targetProjectId);
           setCollapsedProjects(collapsed);
           initialCollapseApplied.current = true;
           if (!targetProjectId) {
             setTimeout(() => fitView({ padding: 0.22, duration: 600 }), 400);
+          } else {
+            // 対象プロジェクトにカメラをフォーカス
+            setTimeout(() => {
+              const ids = piecesRef.current.filter(p => p.project_id === targetProjectId).map(p => p.id);
+              if (ids.length > 0) fitView({ nodes: ids.map(id => ({ id })), padding: 0.3, duration: 700 });
+            }, 700);
           }
         }
       })
@@ -2831,6 +2861,7 @@ function PuzzleBoardInner() {
       return next;
     });
     setSearchParams({}, { replace: true });
+    initialProjectIdRef.current = null; // URLクリア後にrefも解放
     // ノード描画後にそのプロジェクトにカメラをフォーカス
     setTimeout(() => {
       const projectPieceIds = piecesRef.current
@@ -3536,6 +3567,7 @@ function PuzzleBoardInner() {
               return { ...n, data: { ...n.data, width: w, height: h }, style: { ...n.style, width: w, height: h } };
             }));
           } : undefined,
+          onArchive: () => handleArchiveProject(projId),
         } satisfies IslandData,
         draggable: true, selectable: false, focusable: false,
         zIndex: -1,
@@ -4977,6 +5009,19 @@ function PuzzleBoardInner() {
   }, [refresh, push, navigate, workerMap, getNodes, setPositionVersion]);
 
   // ── Piece delete ─────────────────────────────────────────────────────────
+  async function handleArchiveProject(projectId: string) {
+    if (!window.confirm('このプロジェクトをアーカイブしますか？\nボードから非表示になります。')) return;
+    try {
+      await projectApi.update(projectId, { status: 'archived' });
+      setProjectMap(prev => {
+        const next = { ...prev };
+        delete next[projectId];
+        return next;
+      });
+      push('プロジェクトをアーカイブしました', 'success');
+    } catch { push('アーカイブに失敗しました', 'error'); }
+  }
+
   async function handleDeletePiece(pieceId: string) {
     setContextMenu(null);
     setSelectedPiece(null);
@@ -5663,20 +5708,25 @@ function PuzzleBoardInner() {
           >
             {/* 全島一括整列 */}
             <button
-              title="全フォルダのピースを自動整列し直す"
+              title="全フォルダの位置・ピース配置をリセットして整列し直す"
               onClick={() => {
-                // 全ピースの v2f: 位置をクリア → buildGraph が新しい自動レイアウトを使う
+                // v2f:（ピース位置）と island-（フォルダ位置）をすべてクリア
                 for (const key of Object.keys(manualPositions.current)) {
-                  if (key.startsWith('v2f:')) delete manualPositions.current[key];
+                  if (key.startsWith('v2f:') || key.startsWith('island-') || key.startsWith('summary-')) {
+                    delete manualPositions.current[key];
+                  }
                 }
                 try {
                   const all = JSON.parse(localStorage.getItem('pz_board_positions_v2') ?? '{}');
                   for (const key of Object.keys(all)) {
-                    if (key.startsWith('v2f:')) delete all[key];
+                    if (key.startsWith('v2f:') || key.startsWith('island-') || key.startsWith('summary-')) {
+                      delete all[key];
+                    }
                   }
                   localStorage.setItem('pz_board_positions_v2', JSON.stringify(all));
                 } catch {}
                 setPositionVersion(v => v + 1);
+                setTimeout(() => fitView({ padding: 0.22, duration: 600 }), 400);
               }}
               style={{
                 width: 22, height: 22, border: '1px solid var(--border)',
