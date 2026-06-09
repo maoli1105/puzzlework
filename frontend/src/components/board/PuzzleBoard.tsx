@@ -2768,12 +2768,16 @@ function PuzzleBoardInner() {
     projectApi.list()
       .then((ps: Project[]) => {
         setProjectMap(Object.fromEntries(ps.map(p => [p.id, p])));
-        // 初回ロード時のみ全プロジェクトを折りたたむ
+        // 初回ロード時のみ全プロジェクトを折りたたむ（?project= で指定されたものは除外）
         if (!initialCollapseApplied.current && ps.length > 0) {
-          setCollapsedProjects(new Set(ps.map(p => p.id)));
+          const targetProjectId = new URLSearchParams(window.location.search).get('project');
+          const collapsed = new Set(ps.map(p => p.id));
+          if (targetProjectId) collapsed.delete(targetProjectId);
+          setCollapsedProjects(collapsed);
           initialCollapseApplied.current = true;
-          // ノード描画後にフィット
-          setTimeout(() => fitView({ padding: 0.22, duration: 600 }), 400);
+          if (!targetProjectId) {
+            setTimeout(() => fitView({ padding: 0.22, duration: 600 }), 400);
+          }
         }
       })
       .catch(() => {});
@@ -4188,9 +4192,17 @@ function PuzzleBoardInner() {
   }, [workerMap]);
   // ※ filterStatus / filterProject / filterSearch は意図的に除外 → Effect 1.5 で差分パッチ
 
-  // ── Effect 1.5: フィルター変更 → isDimmed だけパッチ（ノード位置に触れない）──
+  // ── Effect 1.5: フィルター変更 → isDimmed / hidden をパッチ（ノード位置に触れない）──
   useEffect(() => {
     setNodes(prev => prev.map(n => {
+      // projectIsland / projectSummary: filterProject が設定されていたら対象外を非表示
+      if (n.type === 'projectIsland' || n.type === 'projectSummary') {
+        if (!filterProject) return { ...n, hidden: false };
+        const nodeProjectId = (n.data as { projectId?: string }).projectId;
+        const hidden = nodeProjectId !== filterProject;
+        if (n.hidden === hidden) return n;
+        return { ...n, hidden };
+      }
       if (n.type !== 'piece') return n;
       const p = n.data.piece as { status: string; project_id?: string; title: string; assignee_id?: string };
       const matchesStatus   = !filterStatus   || p.status === filterStatus;
