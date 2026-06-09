@@ -1,0 +1,12 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script>
+    // GitHub Pages SPA routing: 404を index.html にリダイレクト
+    var path = window.location.pathname.replace('/puzzlework', '');
+    window.location.replace('/puzzlework/' + (path ? '?p=' + path.slice(1) : ''));
+  </script>
+</head>
+<body></body>
+</html>
