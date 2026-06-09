@@ -2814,13 +2814,29 @@ function PuzzleBoardInner() {
 
   // ── URL param ?project=ID — 工房 Orb からの遷移 ──
   // overview でプロジェクト Orb をクリックすると /board?project=ID で飛んでくる。
-  // filterProject をセットして、そのプロジェクト以外を dimmed にする。
+  // フォルダを開き、filterProject をセットし、カメラをフォーカスする。
   useEffect(() => {
     const projectId = searchParams.get('project');
     if (!projectId) return;
     setFilterProject(projectId);
+    // フォルダが折りたたまれていたら開く
+    setCollapsedProjects(prev => {
+      if (!prev.has(projectId)) return prev;
+      const next = new Set(prev);
+      next.delete(projectId);
+      return next;
+    });
     setSearchParams({}, { replace: true });
-  }, [searchParams, setSearchParams]);
+    // ノード描画後にそのプロジェクトにカメラをフォーカス
+    setTimeout(() => {
+      const projectPieceIds = piecesRef.current
+        .filter(p => p.project_id === projectId)
+        .map(p => p.id);
+      if (projectPieceIds.length > 0) {
+        fitView({ nodes: projectPieceIds.map(id => ({ id })), padding: 0.3, duration: 700 });
+      }
+    }, 650);
+  }, [searchParams, setSearchParams, fitView]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── パネルを開いたままデータ同期 ──
   // pieces リストが更新されたとき、開いているパネルのピースを最新データに同期する
