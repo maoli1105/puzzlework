@@ -542,6 +542,7 @@ interface IslandData {
   onTidy?: () => void;          // 整列ボタン: ピースの手動位置をリセットして再レイアウト
   onDeleteConnections?: () => void;  // フォルダ内の全接続を一括削除
   onArchive?: () => void;            // アーカイブボタン: プロジェクトを archived に変更
+  onOpenColorPicker?: (x: number, y: number) => void;
   isPinned?: boolean;           // ★注目フォルダ
   onTogglePin?: () => void;
   doneZoneY?: number;           // 完了パズル区間のY座標 (undefined = 非表示)
@@ -717,7 +718,7 @@ function ProjectIslandNode({ data }: { data: IslandData }) {
           style={{
             position:     'absolute',
             top:          -1,
-            right:        data.onCreatePiece ? 44 : 16,
+            right:        (data.onCreatePiece ? 44 : 16) + (data.onOpenColorPicker ? 26 : 0),
             width:        22,
             height:       22,
             background:   data.isPinned ? '#F59E0B' : col,
@@ -735,6 +736,33 @@ function ProjectIslandNode({ data }: { data: IslandData }) {
             opacity:      data.isPinned ? 1 : 0.7,
           }}>
           {data.isPinned ? '★' : '☆'}
+        </div>
+      )}
+
+      {/* 色変更ボタン */}
+      {data.onOpenColorPicker && (
+        <div
+          onClick={e => { e.stopPropagation(); data.onOpenColorPicker?.(e.clientX, e.clientY); }}
+          title="フォルダの色を変更"
+          style={{
+            position:     'absolute',
+            top:          -1,
+            right:        data.onCreatePiece ? 44 : 16,
+            width:        22,
+            height:       22,
+            borderRadius: '0 0 8px 8px',
+            display:      'flex',
+            alignItems:   'center',
+            justifyContent: 'center',
+            cursor:       'pointer',
+            pointerEvents:'auto',
+            userSelect:   'none',
+          }}>
+          <div style={{
+            width: 14, height: 14, borderRadius: '50%',
+            background: data.color, border: '2px solid rgba(255,255,255,0.5)',
+            flexShrink: 0,
+          }} />
         </div>
       )}
 
@@ -2040,6 +2068,7 @@ function PuzzleBoardInner() {
   const [isConnecting,    setIsConnecting]    = useState(false);
   const [filterStatus,    setFilterStatus]    = useState('');
   const [filterProject,   setFilterProject]   = useState('');
+  const [filterColor,     setFilterColor]     = useState('');
   const [filterSearch,    setFilterSearch]    = useState('');
   const [filterOpen,      setFilterOpen]      = useState(false);
   const [templateOpen,    setTemplateOpen]    = useState(false);
@@ -2057,7 +2086,7 @@ function PuzzleBoardInner() {
   const [showCritical,      setShowCritical]      = useState(false);
   const [sprintOpen,        setSprintOpen]        = useState(false);
   const [collapsedProjects, setCollapsedProjects] = useState<Set<string>>(new Set());
-  const [islandSort, setIslandSort] = useState<'default' | 'name' | 'progress'>('default');
+  const [islandSort, setIslandSort] = useState<'default' | 'name' | 'progress' | 'color'>('default');
   const [pieceSort,  setPieceSort]  = useState<'default' | 'status' | 'due'>('default');
   const [expandedPieces,    setExpandedPieces]    = useState<Set<string>>(new Set());
   const [filterAssignee,   setFilterAssignee]   = useState('');
@@ -2786,6 +2815,24 @@ function PuzzleBoardInner() {
     pos: Record<string, { x: number; y: number }>;
   }>({ key: '', pos: {} });
 
+  // islandSort変更時: フォルダ位置をリセットして再レイアウト
+  useEffect(() => {
+    if (islandSort === 'default') return;
+    for (const key of Object.keys(manualPositions.current)) {
+      if (key.startsWith('island-') || key.startsWith('summary-')) {
+        delete manualPositions.current[key];
+      }
+    }
+    try {
+      const all = JSON.parse(localStorage.getItem('pz_board_positions_v2') ?? '{}');
+      for (const key of Object.keys(all)) {
+        if (key.startsWith('island-') || key.startsWith('summary-')) delete all[key];
+      }
+      localStorage.setItem('pz_board_positions_v2', JSON.stringify(all));
+    } catch {}
+    setPositionVersion(v => v + 1);
+  }, [islandSort]);
+
   // ── Data fetch ──
   useEffect(() => {
     refresh();
@@ -2861,7 +2908,6 @@ function PuzzleBoardInner() {
       return next;
     });
     setSearchParams({}, { replace: true });
-    initialProjectIdRef.current = null; // URLクリア後にrefも解放
     // ノード描画後にそのプロジェクトにカメラをフォーカス
     setTimeout(() => {
       const projectPieceIds = piecesRef.current
@@ -3154,6 +3200,12 @@ function PuzzleBoardInner() {
         const pct = (ps: Piece[]) => ps.length === 0 ? 0 : ps.filter(p => p.status === 'done').length / ps.length;
         return pct(folderByProject[b]) - pct(folderByProject[a]);
       });
+    } else if (islandSort === 'color') {
+      folderEntries.sort(([a], [b]) => {
+        const ca = projectMap[a]?.color ?? '#999';
+        const cb = projectMap[b]?.color ?? '#999';
+        return ca.localeCompare(cb);
+      });
     }
 
     for (const [projId, rawPieces] of folderEntries) {
@@ -3176,6 +3228,7 @@ function PuzzleBoardInner() {
       if (showPinnedOnly && !pinnedProjects.has(projId)) continue;
       // プロジェクトフィルターが設定されている場合、対象外フォルダ全体をスキップ
       if (filterProject && projId !== filterProject) continue;
+      if (filterColor && (proj.color ?? '') !== filterColor) continue;
 
       // ── ① アクティブ / 完了 に分離 ────────────────────────────────────────
       const activePieces = projPieces.filter(p => p.status !== 'done');
@@ -3568,6 +3621,9 @@ function PuzzleBoardInner() {
             }));
           } : undefined,
           onArchive: () => handleArchiveProject(projId),
+          onOpenColorPicker: (x: number, y: number) => {
+            setProjectColorMenu({ x, y, projectId: projId, currentColor: proj.color || '#6366f1' });
+          },
         } satisfies IslandData,
         draggable: true, selectable: false, focusable: false,
         zIndex: -1,
@@ -3679,6 +3735,7 @@ function PuzzleBoardInner() {
       // 既にフォルダとして描画済み、または折りたたみ済みならスキップ
       if (folderByProject[projId] || collapsedByProject[projId]) continue;
       if (filterProject && projId !== filterProject) continue;
+      if (filterColor && (proj.color ?? '') !== filterColor) continue;
       if (showPinnedOnly && !pinnedProjects.has(projId)) continue;
       const islandId = `island-${projId}`;
       if (!manualPositions.current[islandId]) {
@@ -4131,7 +4188,7 @@ function PuzzleBoardInner() {
       showIslands, workshopTheme, positionVersion, jigsawWrapCols, showCrossProjectConns,
       collapsedProjects, toggleCollapse, expandedPieces, toggleExpand, islandSort, pieceSort,
       childMap, concentrationMaps, missingMaps, affinityPairs, roleMap, environmentMaps, memoryMaps, visualStateMap, identity,
-      workerMetrics, workerMap, temporalMetrics]);
+      workerMetrics, workerMap, temporalMetrics, filterColor]);
   // ※ blockedIds / criticalIds / impactScales は Effect 1.8 で差分パッチ
 
   // ── Effect 1.9: Workshop v2 カメラ構成 ────────────────────────────────────
@@ -4227,11 +4284,14 @@ function PuzzleBoardInner() {
   // ── Effect 1.5: フィルター変更 → isDimmed / hidden をパッチ（ノード位置に触れない）──
   useEffect(() => {
     setNodes(prev => prev.map(n => {
-      // projectIsland / projectSummary: filterProject が設定されていたら対象外を非表示
+      // projectIsland / projectSummary: filterProject / filterColor が設定されていたら対象外を非表示
       if (n.type === 'projectIsland' || n.type === 'projectSummary') {
-        if (!filterProject) return { ...n, hidden: false };
         const nodeProjectId = (n.data as { projectId?: string }).projectId;
-        const hidden = nodeProjectId !== filterProject;
+        const nodeColor     = (n.data as { color?: string }).color ?? '';
+        const hiddenByProject = filterProject ? nodeProjectId !== filterProject : false;
+        const hiddenByColor   = filterColor   ? nodeColor !== filterColor       : false;
+        const hidden = hiddenByProject || hiddenByColor;
+        if (!filterProject && !filterColor) return { ...n, hidden: false };
         if (n.hidden === hidden) return n;
         return { ...n, hidden };
       }
@@ -4250,7 +4310,7 @@ function PuzzleBoardInner() {
         style: filterDimmed ? { pointerEvents: 'none' as const } : undefined,
       };
     }));
-  }, [filterStatus, filterProject, filterSearch, filterAssignee]);
+  }, [filterStatus, filterProject, filterSearch, filterAssignee, filterColor]);
 
   // ── Effect PHASE10-A: Flow Session Mode / Repair Mode dimming ────────────────
   // flowSession: active chain 以外を opacity 0.18 に。
@@ -5079,7 +5139,7 @@ function PuzzleBoardInner() {
     computeBlockedIds(pieces, connections).has(p.id)
   ).length;
   const visibleCount    = nodes.filter(n => n.type === 'piece' && !(n.style as { pointerEvents?: string } | undefined)?.pointerEvents).length;
-  const hasFilter       = !!(filterStatus || filterProject || filterSearch || filterAssignee);
+  const hasFilter       = !!(filterStatus || filterProject || filterSearch || filterAssignee || filterColor);
 
   return (
     <div
@@ -5213,6 +5273,25 @@ function PuzzleBoardInner() {
             <option value="default">フォルダ：並び替え</option>
             <option value="name">フォルダ：名前順</option>
             <option value="progress">フォルダ：進捗順</option>
+            <option value="color">フォルダ：色順</option>
+          </select>
+
+          {/* ── 色フィルター ── */}
+          <select
+            value={filterColor}
+            onChange={e => setFilterColor(e.target.value)}
+            title="指定した色のフォルダのみ表示"
+            style={{
+              fontSize: 11, padding: '3px 6px', border: '1px solid var(--border)',
+              borderRadius: 'var(--r-sm)', background: filterColor ? 'var(--accent-sub)' : 'var(--surface-sub)',
+              color: filterColor ? 'var(--accent)' : 'var(--text-2)',
+              cursor: 'pointer', outline: 'none',
+            }}
+          >
+            <option value="">色：すべて</option>
+            {[...new Set(Object.values(projectMap).map(p => p.color).filter(Boolean))].sort().map(c => (
+              <option key={c} value={c} style={{ background: c ?? undefined }}>{c}</option>
+            ))}
           </select>
 
           {/* ── ピースソート ── */}
