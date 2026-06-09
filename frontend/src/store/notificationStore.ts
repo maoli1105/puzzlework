@@ -6,6 +6,9 @@ export interface Notification {
   type: string;
   message: string;
   piece_id?: string;
+  piece_title?: string;
+  from_name?: string;
+  comment_content?: string;
   ts: Date;
   read: boolean;
 }
@@ -72,6 +75,20 @@ function eventToNotification(event: WSEvent): Notification | null {
     case 'alert':
     case 'bottleneck_alert':
       return { id, type: 'alert', message: msg || 'アラート', piece_id, ts, read: false };
+    case 'comment_mention': {
+      const fromName     = event.payload.from_name as string | undefined;
+      const pieceTitle   = event.payload.piece_title as string | undefined;
+      const content      = event.payload.content as string | undefined;
+      return {
+        id, type: 'comment_mention',
+        message: `${fromName ?? '誰か'} があなたをメンションしました`,
+        piece_id,
+        piece_title: pieceTitle,
+        from_name:   fromName,
+        comment_content: content,
+        ts, read: false,
+      };
+    }
     default:
       return null;
   }

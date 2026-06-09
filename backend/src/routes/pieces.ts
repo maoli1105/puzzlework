@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { authenticate, requireAdmin } from '../middleware/auth';
 import { pool } from '../db';
+import { notifyUser } from '../websocket';
 import {
   createPiece,
   getPiece,
@@ -684,13 +685,41 @@ router.get('/:id/comments', authenticate, async (req, res) => {
 router.post('/:id/comments', authenticate, async (req, res) => {
   const { id } = req.params;
   const { content } = req.body;
-  const userId = (req as { user?: { id: string } }).user?.id;
+  const userId = (req as { user?: { id: string; company_id: string } }).user?.id;
+  const companyId = (req as { user?: { id: string; company_id: string } }).user?.company_id;
   if (!content?.trim()) { res.status(400).json({ error: 'Content required' }); return; }
   const { rows: [comment] } = await pool.query(
     `INSERT INTO piece_comments (piece_id, user_id, content) VALUES ($1, $2, $3) RETURNING *`,
     [id, userId, content.trim()]
   );
   const { rows: [user] } = await pool.query('SELECT name FROM users WHERE id = $1', [userId]);
+  const { rows: [piece] } = await pool.query('SELECT title FROM pieces WHERE id = $1', [id]);
+
+  // @メンション解析: @名前 パターンを抽出し対象ユーザーに通知
+  const mentions = [...content.matchAll(/@(\S+)/g)].map(m => m[1]);
+  if (mentions.length > 0 && companyId) {
+    for (const mentionName of mentions) {
+      const { rows: [target] } = await pool.query(
+        `SELECT u.id FROM users u
+         JOIN company_memberships cm ON cm.user_id = u.id
+         WHERE cm.company_id = $1 AND u.name = $2 AND u.id != $3 LIMIT 1`,
+        [companyId, mentionName, userId]
+      );
+      if (target) {
+        notifyUser(target.id, {
+          type: 'comment_mention',
+          payload: {
+            piece_id:    id,
+            piece_title: piece?.title ?? '',
+            from_name:   user.name,
+            content:     content.trim(),
+            comment_id:  comment.id,
+          },
+        });
+      }
+    }
+  }
+
   res.status(201).json({ ...comment, user_name: user.name });
 });
 

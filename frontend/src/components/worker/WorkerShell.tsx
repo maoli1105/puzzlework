@@ -97,9 +97,19 @@ export default function WorkerShell({ children }: { children: React.ReactNode })
   const [pwError,    setPwError]    = useState('');
   const [pwSuccess,  setPwSuccess]  = useState(false);
   const [myCompanies, setMyCompanies] = useState<{ id: string; name: string; role: string }[]>([]);
+  const [mentionThread, setMentionThread] = useState<{ piece_id: string; piece_title: string; from_name: string } | null>(null);
 
   // WebSocket — 通知受信
-  useWebSocket((event: WSEvent) => { addNotification(event); });
+  useWebSocket((event: WSEvent) => {
+    if (event.type === 'comment_mention') {
+      // メンション通知: 通知ストアに追加し、パネルを開く
+      addNotification(event);
+      setNotifOpen(true);
+      setNotifTab('notif');
+    } else {
+      addNotification(event);
+    }
+  });
 
   // 所属会社一覧
   useEffect(() => {
@@ -221,7 +231,15 @@ export default function WorkerShell({ children }: { children: React.ReactNode })
             <div style={{ maxHeight: 340, overflowY: 'auto' }}>
               {notifications.map(n => (
                 <div key={n.id}
-                  onClick={() => { if (n.piece_id) navigate(`/piece/${n.piece_id}`); useNotificationStore.getState().markRead(n.id); }}
+                  onClick={() => {
+                    if (n.type === 'comment_mention' && n.piece_id) {
+                      setMentionThread({ piece_id: n.piece_id, piece_title: n.piece_title ?? '', from_name: n.from_name ?? '' });
+                      useNotificationStore.getState().markRead(n.id);
+                    } else if (n.piece_id) {
+                      navigate(`/piece/${n.piece_id}`);
+                      useNotificationStore.getState().markRead(n.id);
+                    }
+                  }}
                   style={{ padding: '9px 12px', borderBottom: '1px solid var(--border-sub)', display: 'flex', gap: 9, alignItems: 'flex-start', background: n.read ? 'transparent' : 'var(--accent-sub)', cursor: n.piece_id ? 'pointer' : 'default', transition: 'background 0.1s' }}
                   onMouseEnter={e => { if (n.piece_id) (e.currentTarget as HTMLDivElement).style.background = 'var(--surface-sub)'; }}
                   onMouseLeave={e => { (e.currentTarget as HTMLDivElement).style.background = n.read ? 'transparent' : 'var(--accent-sub)'; }}
@@ -229,6 +247,9 @@ export default function WorkerShell({ children }: { children: React.ReactNode })
                   <div style={{ marginTop: 1, flexShrink: 0 }}><NotifIcon type={n.type} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 11.5, color: 'var(--text-1)', lineHeight: 1.45, wordBreak: 'break-all' }}>{n.message}</div>
+                    {n.type === 'comment_mention' && n.piece_title && (
+                      <div style={{ fontSize: 10.5, color: 'var(--accent)', marginTop: 2, fontWeight: 500 }}>「{n.piece_title}」のコメントを見る →</div>
+                    )}
                     <div style={{ fontSize: 10, color: 'var(--text-3)', marginTop: 3 }}>{timeAgo(n.ts)}</div>
                   </div>
                   <button onClick={e => { e.stopPropagation(); removeNotification(n.id); }}
@@ -641,6 +662,142 @@ export default function WorkerShell({ children }: { children: React.ReactNode })
       )}
 
       <UpgradeModal />
+
+      {/* ── コメントスレッドモーダル（@メンション通知から開く） ── */}
+      {mentionThread && (
+        <MentionThreadModal
+          pieceId={mentionThread.piece_id}
+          pieceTitle={mentionThread.piece_title}
+          onClose={() => setMentionThread(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function MentionThreadModal({ pieceId, pieceTitle, onClose }: { pieceId: string; pieceTitle: string; onClose: () => void }) {
+  const [comments, setComments] = useState<{ id: string; content: string; user_name: string; created_at: string }[]>([]);
+  const [newComment, setNewComment] = useState('');
+  const [posting, setPosting] = useState(false);
+  const [members, setMembers] = useState<{ id: string; name: string }[]>([]);
+  const [mentionQuery, setMentionQuery] = useState<string | null>(null);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    pieceApi.getComments(pieceId).then(setComments).catch(() => {});
+    usersApi.workers().then((ws: { id: string; name: string }[]) => setMembers(ws)).catch(() => {});
+  }, [pieceId]);
+
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [comments]);
+
+  const mentionCandidates = mentionQuery !== null
+    ? members.filter(m => m.name.toLowerCase().includes(mentionQuery.toLowerCase())).slice(0, 5)
+    : [];
+
+  function handleChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const val = e.target.value;
+    setNewComment(val);
+    const cursor = e.target.selectionStart ?? val.length;
+    const atMatch = val.slice(0, cursor).match(/@(\S*)$/);
+    if (atMatch) { setMentionQuery(atMatch[1]); setMentionIndex(0); }
+    else setMentionQuery(null);
+  }
+
+  function insertMention(name: string) {
+    const cursor = inputRef.current?.selectionStart ?? newComment.length;
+    const replaced = newComment.slice(0, cursor).replace(/@(\S*)$/, `@${name} `);
+    setNewComment(replaced + newComment.slice(cursor));
+    setMentionQuery(null);
+    setTimeout(() => inputRef.current?.focus(), 0);
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (mentionQuery !== null && mentionCandidates.length > 0) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); setMentionIndex(i => Math.min(i + 1, mentionCandidates.length - 1)); return; }
+      if (e.key === 'ArrowUp')   { e.preventDefault(); setMentionIndex(i => Math.max(i - 1, 0)); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); insertMention(mentionCandidates[mentionIndex].name); return; }
+      if (e.key === 'Escape') { setMentionQuery(null); return; }
+    }
+    if (e.key === 'Enter' && !e.shiftKey && mentionQuery === null) { e.preventDefault(); handlePost(); }
+  }
+
+  async function handlePost() {
+    if (!newComment.trim()) return;
+    setPosting(true);
+    try {
+      const c = await pieceApi.addComment(pieceId, newComment.trim());
+      setComments(prev => [...prev, c]);
+      setNewComment('');
+    } finally { setPosting(false); }
+  }
+
+  function renderContent(text: string) {
+    return text.split(/(@\S+)/g).map((p, i) =>
+      p.startsWith('@') ? <span key={i} style={{ color: 'var(--accent)', fontWeight: 600 }}>{p}</span> : <span key={i}>{p}</span>
+    );
+  }
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 10000, background: 'rgba(0,0,0,0.45)', display: 'flex', alignItems: 'flex-end', justifyContent: 'center' }}
+      onClick={e => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div style={{ width: '100%', maxWidth: 480, background: 'var(--surface)', borderRadius: '12px 12px 0 0', maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: '16px 16px 0' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12, flexShrink: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-1)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+            {pieceTitle || 'コメント'}
+          </div>
+          <button onClick={onClose} style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-3)', display: 'flex', padding: 4 }}>
+            <XIcon size={16} />
+          </button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 8, paddingBottom: 12 }}>
+          {comments.length === 0 && (
+            <div style={{ fontSize: 11, color: 'var(--text-3)', textAlign: 'center', padding: '24px 0' }}>まだコメントはありません</div>
+          )}
+          {comments.map(c => (
+            <div key={c.id} style={{ background: 'var(--surface-sub)', borderRadius: 8, padding: '8px 10px', border: '1px solid var(--border-sub)' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                <span style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-2)' }}>{c.user_name}</span>
+                <span style={{ fontSize: 10, color: 'var(--text-3)' }}>{new Date(c.created_at).toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+              <div style={{ fontSize: 12, color: 'var(--text-1)', lineHeight: 1.5 }}>{renderContent(c.content)}</div>
+            </div>
+          ))}
+          <div ref={endRef} />
+        </div>
+
+        <div style={{ borderTop: '1px solid var(--border)', padding: '10px 0 16px', flexShrink: 0, position: 'relative' }}>
+          {mentionQuery !== null && mentionCandidates.length > 0 && (
+            <div style={{ position: 'absolute', bottom: '100%', left: 0, right: 0, marginBottom: 4, background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, boxShadow: '0 4px 16px rgba(0,0,0,0.12)', zIndex: 10, overflow: 'hidden' }}>
+              {mentionCandidates.map((m, i) => (
+                <div key={m.id} onMouseDown={e => { e.preventDefault(); insertMention(m.name); }}
+                  style={{ padding: '7px 12px', fontSize: 12, cursor: 'pointer', background: i === mentionIndex ? 'var(--accent-sub)' : 'transparent', color: i === mentionIndex ? 'var(--accent)' : 'var(--text-1)', fontWeight: i === mentionIndex ? 600 : 400 }}>
+                  @{m.name}
+                </div>
+              ))}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input
+              ref={inputRef}
+              value={newComment}
+              onChange={handleChange}
+              onKeyDown={handleKeyDown}
+              placeholder="返信する... （@名前でメンション）"
+              style={{ flex: 1, border: '1px solid var(--border)', borderRadius: 6, padding: '8px 10px', fontSize: 12, background: 'var(--surface)', color: 'var(--text-1)', outline: 'none' }}
+            />
+            <button onClick={handlePost} disabled={posting || !newComment.trim()}
+              style={{ padding: '8px 14px', background: 'var(--text-1)', color: '#FAFAF8', border: 'none', borderRadius: 6, fontSize: 12, fontWeight: 600, cursor: 'pointer', opacity: posting || !newComment.trim() ? 0.5 : 1 }}>
+              {posting ? '...' : '送信'}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

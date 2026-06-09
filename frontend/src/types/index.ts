@@ -94,7 +94,7 @@ export interface BottleneckReport {
 export interface WSEvent {
   type: 'piece_ready' | 'piece_assigned' | 'piece_done' | 'piece_status_changed'
       | 'bottleneck_alert' | 'skill_levelup' | 'alert' | 'auto_promoted'
-      | 'cursor_move' | 'cursor_leave';
+      | 'cursor_move' | 'cursor_leave' | 'comment_mention';
   payload: Record<string, unknown>;
 }
 
