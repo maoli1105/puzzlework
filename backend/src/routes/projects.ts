@@ -126,16 +126,18 @@ router.post('/', requireAdmin, async (req: AuthRequest, res) => {
 router.patch('/:id', requireAdmin, async (req: AuthRequest, res) => {
   try {
     const { id } = req.params;
-    const { name, description, color, status, due_date } = req.body;
+    const { name, description, color, status, due_date, slack_webhook_url } = req.body;
     const { rows: [proj] } = await pool.query(
       `UPDATE projects SET
-         name        = COALESCE($1, name),
-         description = COALESCE($2, description),
-         color       = COALESCE($3, color),
-         status      = COALESCE($4, status),
-         due_date    = COALESCE($5, due_date)
-       WHERE id = $6 RETURNING *`,
-      [name, description, color, status, due_date || null, id]
+         name              = COALESCE($1, name),
+         description       = COALESCE($2, description),
+         color             = COALESCE($3, color),
+         status            = COALESCE($4, status),
+         due_date          = COALESCE($5, due_date),
+         slack_webhook_url = CASE WHEN $7 THEN $6 ELSE slack_webhook_url END
+       WHERE id = $8 RETURNING *`,
+      [name, description, color, status, due_date || null,
+       slack_webhook_url ?? null, slack_webhook_url !== undefined, id]
     );
     res.json(proj);
   } catch (e) {

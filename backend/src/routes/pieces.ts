@@ -695,17 +695,17 @@ router.post('/:id/comments', authenticate, async (req, res) => {
   const { rows: [user] } = await pool.query('SELECT name FROM users WHERE id = $1', [userId]);
   const { rows: [piece] } = await pool.query('SELECT title FROM pieces WHERE id = $1', [id]);
 
-  // @メンション解析: @名前 パターンを抽出し対象ユーザーに通知
-  const mentions = [...content.matchAll(/@(\S+)/g)].map(m => m[1]);
-  if (mentions.length > 0 && companyId) {
-    for (const mentionName of mentions) {
-      const { rows: [target] } = await pool.query(
-        `SELECT u.id FROM users u
-         JOIN company_memberships cm ON cm.user_id = u.id
-         WHERE cm.company_id = $1 AND u.name = $2 AND u.id != $3 LIMIT 1`,
-        [companyId, mentionName, userId]
-      );
-      if (target) {
+  // @メンション解析: 会社メンバーの名前を含むかチェックして通知
+  // スペースを含む名前に対応するため regex ではなく includes で照合
+  if (companyId) {
+    const { rows: companyUsers } = await pool.query(
+      `SELECT u.id, u.name FROM users u
+       JOIN company_memberships cm ON cm.user_id = u.id
+       WHERE cm.company_id = $1 AND u.id != $2 AND cm.status = 'active'`,
+      [companyId, userId]
+    );
+    for (const target of companyUsers) {
+      if (content.includes(`@${target.name}`)) {
         notifyUser(target.id, {
           type: 'comment_mention',
           payload: {
@@ -717,6 +717,26 @@ router.post('/:id/comments', authenticate, async (req, res) => {
           },
         });
       }
+    }
+
+    // Slack Webhook 転送: ピースのプロジェクトに設定があれば投稿
+    const { rows: [proj] } = await pool.query(
+      `SELECT p.slack_webhook_url, pr.name AS project_name
+       FROM pieces pi
+       LEFT JOIN projects p ON p.id = pi.project_id
+       LEFT JOIN projects pr ON pr.id = pi.project_id
+       WHERE pi.id = $1`, [id]
+    );
+    if (proj?.slack_webhook_url) {
+      const slackBody = {
+        text: `*[${proj.project_name ?? 'プロジェクト'}]* ${user.name}: ${content.trim()}`,
+        username: 'PuzzleWork',
+      };
+      fetch(proj.slack_webhook_url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(slackBody),
+      }).catch(() => {}); // 失敗しても無視
     }
   }
 

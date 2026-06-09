@@ -543,6 +543,8 @@ interface IslandData {
   onDeleteConnections?: () => void;  // フォルダ内の全接続を一括削除
   onArchive?: () => void;            // アーカイブボタン: プロジェクトを archived に変更
   onOpenColorPicker?: (x: number, y: number) => void;
+  slackWebhookUrl?: string;          // Slack Webhook URL（設定済みかどうかの表示用）
+  onConfigSlack?: (x: number, y: number) => void; // Slack設定ダイアログを開く
   isPinned?: boolean;           // ★注目フォルダ
   onTogglePin?: () => void;
   doneZoneY?: number;           // 完了パズル区間のY座標 (undefined = 非表示)
@@ -763,6 +765,29 @@ function ProjectIslandNode({ data }: { data: IslandData }) {
             background: data.color, border: '2px solid rgba(255,255,255,0.5)',
             flexShrink: 0,
           }} />
+        </div>
+      )}
+
+      {/* Slack設定ボタン */}
+      {data.onConfigSlack && (
+        <div
+          onClick={e => { e.stopPropagation(); data.onConfigSlack?.(e.clientX, e.clientY); }}
+          title={data.slackWebhookUrl ? 'Slack連携済み（クリックで変更）' : 'Slackに通知を設定'}
+          style={{
+            position: 'absolute', top: -1,
+            right: (data.onCreatePiece ? 44 : 16) + (data.onOpenColorPicker ? 22 : 0) + 4,
+            width: 22, height: 22,
+            borderRadius: '0 0 8px 8px',
+            background: data.slackWebhookUrl ? '#4A154B' : `${col}22`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            cursor: 'pointer', pointerEvents: 'auto', userSelect: 'none',
+          }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none">
+            <path d="M6 15a2 2 0 01-2 2 2 2 0 01-2-2 2 2 0 012-2h2v2zM7 15a2 2 0 012-2 2 2 0 012 2v5a2 2 0 01-2 2 2 2 0 01-2-2v-5z" fill={data.slackWebhookUrl ? '#fff' : col}/>
+            <path d="M15 6a2 2 0 012-2 2 2 0 012 2 2 2 0 01-2 2h-2V6zM15 7a2 2 0 01-2 2 2 2 0 01-2-2V2a2 2 0 012-2 2 2 2 0 012 2v5z" fill={data.slackWebhookUrl ? '#fff' : col}/>
+            <path d="M9 18a2 2 0 01-2 2 2 2 0 01-2-2 2 2 0 012-2h2v2zM10 18a2 2 0 012 2 2 2 0 012-2v-5a2 2 0 01-2-2 2 2 0 01-2 2v5z" fill={data.slackWebhookUrl ? '#ECB22E' : col} opacity="0.8"/>
+            <path d="M18 9a2 2 0 012 2 2 2 0 01-2 2 2 2 0 01-2-2V9h2zM17 9a2 2 0 01-2-2 2 2 0 012-2h5a2 2 0 012 2 2 2 0 01-2 2h-5z" fill={data.slackWebhookUrl ? '#ECB22E' : col} opacity="0.8"/>
+          </svg>
         </div>
       )}
 
@@ -2078,6 +2103,8 @@ function PuzzleBoardInner() {
   const [edgeContextMenu, setEdgeContextMenu] = useState<EdgeContextMenu | null>(null);
   const [projectColorMenu, setProjectColorMenu] = useState<{ x: number; y: number; projectId: string; currentColor: string } | null>(null);
   const [pcmTab, setPcmTab] = useState<'classic' | 'color'>('classic');
+  const [slackMenu, setSlackMenu] = useState<{ x: number; y: number; projectId: string; current: string } | null>(null);
+  const [slackDraft, setSlackDraft] = useState('');
   const [projectMap,      setProjectMap]      = useState<Record<string, Project>>({});
   const [workerMap,       setWorkerMap]       = useState<Record<string, { name: string }>>({});
   const [workers,         setWorkers]         = useState<User[]>([]);
@@ -2179,10 +2206,20 @@ function PuzzleBoardInner() {
   const toggleCollapse = useCallback((projectId: string) => {
     setCollapsedProjects(prev => {
       const next = new Set(prev);
-      next.has(projectId) ? next.delete(projectId) : next.add(projectId);
+      const expanding = next.has(projectId);
+      expanding ? next.delete(projectId) : next.add(projectId);
+      // 展開時: このislandを最前面に
+      if (expanding) {
+        setNodes(prevNodes => prevNodes.map(n => {
+          if (n.type !== 'projectIsland') return n;
+          const z = n.id === `island-${projectId}` ? 2 : -1;
+          if ((n.zIndex ?? -1) === z) return n;
+          return { ...n, zIndex: z, style: { ...n.style, zIndex: z } };
+        }));
+      }
       return next;
     });
-  }, []);
+  }, [setNodes]);
 
   const toggleExpand = useCallback((pieceId: string) => {
     setExpandedPieces(prev => {
@@ -3624,6 +3661,11 @@ function PuzzleBoardInner() {
           onOpenColorPicker: (x: number, y: number) => {
             setProjectColorMenu({ x, y, projectId: projId, currentColor: proj.color || '#6366f1' });
           },
+          slackWebhookUrl: (proj as { slack_webhook_url?: string }).slack_webhook_url ?? undefined,
+          onConfigSlack: (x: number, y: number) => {
+            setSlackDraft((proj as { slack_webhook_url?: string }).slack_webhook_url ?? '');
+            setSlackMenu({ x, y, projectId: projId, current: (proj as { slack_webhook_url?: string }).slack_webhook_url ?? '' });
+          },
         } satisfies IslandData,
         draggable: true, selectable: false, focusable: false,
         zIndex: -1,
@@ -4812,6 +4854,16 @@ function PuzzleBoardInner() {
   // ── Drag-to-island / Cross-island drag ────────────────────────────────────
   // ── Direct Manipulation: drag start/move handlers ─────────────────────────
   const onNodeDragStart = useCallback((_e: React.MouseEvent, node: Node) => {
+    // islandをドラッグ: そのフォルダを最前面へ（他のislandのz-indexを下げる）
+    if (node.type === 'projectIsland') {
+      setNodes(prev => prev.map(n => {
+        if (n.type !== 'projectIsland') return n;
+        const z = n.id === node.id ? 2 : -1;
+        if ((n.zIndex ?? -1) === z) return n;
+        return { ...n, zIndex: z, style: { ...n.style, zIndex: z } };
+      }));
+      return;
+    }
     if (node.type !== 'piece') return;
     setIsDraggingPiece(true);
     dragHoverIdRef.current = null;
@@ -6074,6 +6126,69 @@ function PuzzleBoardInner() {
             style={{ width: '100%', padding: '7px 14px', border: 'none', background: 'transparent', color: '#EF4444', textAlign: 'left', cursor: 'pointer', fontSize: 12 }}>
             🗑 接続を削除
           </button>
+        </div>
+      )}
+
+      {/* ═══ Slack Webhook 設定 ════════════════════════════════════════════ */}
+      {slackMenu && (
+        <div
+          onClick={e => e.stopPropagation()}
+          style={{
+            position: 'fixed',
+            left: Math.min(slackMenu.x, window.innerWidth - 320),
+            top: Math.min(slackMenu.y, window.innerHeight - 160),
+            zIndex: 9999, background: 'var(--surface)', border: '1px solid var(--border)',
+            borderRadius: 8, boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+            padding: '14px 16px', width: 300,
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-3)', letterSpacing: '0.06em', marginBottom: 8 }}>
+            SLACK WEBHOOK URL
+          </div>
+          <input
+            value={slackDraft}
+            onChange={e => setSlackDraft(e.target.value)}
+            placeholder="https://hooks.slack.com/services/..."
+            style={{ width: '100%', border: '1px solid var(--border)', borderRadius: 4, padding: '7px 9px', fontSize: 11, background: 'var(--surface)', color: 'var(--text-1)', outline: 'none', boxSizing: 'border-box', marginBottom: 8 }}
+          />
+          <div style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 10, lineHeight: 1.5 }}>
+            Slackの「Incoming Webhooks」アプリで取得できます。このフォルダへのコメントが自動転送されます。
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button
+              onClick={async () => {
+                try {
+                  await projectApi.update(slackMenu.projectId, { slack_webhook_url: slackDraft });
+                  setProjectMap(prev => ({
+                    ...prev,
+                    [slackMenu.projectId]: { ...prev[slackMenu.projectId], slack_webhook_url: slackDraft } as typeof prev[string],
+                  }));
+                  push(slackDraft ? 'Slack連携を設定しました' : 'Slack連携を解除しました', 'success');
+                  setPositionVersion(v => v + 1);
+                } catch { push('設定に失敗しました', 'error'); }
+                setSlackMenu(null);
+              }}
+              style={{ flex: 1, padding: '7px 0', background: '#4A154B', color: '#fff', border: 'none', borderRadius: 4, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            >保存</button>
+            {slackMenu.current && (
+              <button
+                onClick={async () => {
+                  try {
+                    await projectApi.update(slackMenu.projectId, { slack_webhook_url: '' });
+                    setProjectMap(prev => ({
+                      ...prev,
+                      [slackMenu.projectId]: { ...prev[slackMenu.projectId], slack_webhook_url: '' } as typeof prev[string],
+                    }));
+                    push('Slack連携を解除しました', 'success');
+                    setPositionVersion(v => v + 1);
+                  } catch { push('解除に失敗しました', 'error'); }
+                  setSlackMenu(null);
+                }}
+                style={{ padding: '7px 12px', background: 'transparent', color: 'var(--text-3)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}
+              >解除</button>
+            )}
+            <button onClick={() => setSlackMenu(null)} style={{ padding: '7px 12px', background: 'transparent', color: 'var(--text-3)', border: '1px solid var(--border)', borderRadius: 4, fontSize: 12, cursor: 'pointer' }}>キャンセル</button>
+          </div>
         </div>
       )}
 
