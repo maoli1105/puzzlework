@@ -8,6 +8,7 @@ interface Props {
   onClose: () => void;
   onCreated: () => void;
   defaultParentId?: string | null;   // 子タスク作成時に親を事前選択
+  defaultProjectId?: string | null;  // フォルダ + から開いた時にプロジェクトを事前選択
   allPieces?: Piece[];               // 親候補リスト
 }
 
@@ -29,17 +30,20 @@ const EMPTY_FORM = {
 
 interface SkillVelocity { skill: string; avg_days: number | null; pieces_done: number; }
 
-export default function PieceCreatePanel({ open, onClose, onCreated, defaultParentId, allPieces = [] }: Props) {
+export default function PieceCreatePanel({ open, onClose, onCreated, defaultParentId, defaultProjectId, allPieces = [] }: Props) {
   const [workers, setWorkers]   = useState<User[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  const [form, setForm]         = useState({ ...EMPTY_FORM, parent_id: defaultParentId ?? '' });
+  const [form, setForm]         = useState({ ...EMPTY_FORM, parent_id: defaultParentId ?? '', project_id: defaultProjectId ?? '' });
   const [saving, setSaving]     = useState(false);
   const [skillVelocity, setSkillVelocity] = useState<SkillVelocity[]>([]);
 
-  // defaultParentId が変わったらフォームに反映
+  // defaultParentId / defaultProjectId が変わったらフォームに反映
   useEffect(() => {
     setForm(f => ({ ...f, parent_id: defaultParentId ?? '' }));
   }, [defaultParentId]);
+  useEffect(() => {
+    setForm(f => ({ ...f, project_id: defaultProjectId ?? '' }));
+  }, [defaultProjectId]);
 
   // 親候補: parent_id が null のルートピースのみ（孫以上の深さは作らない）
   const parentCandidates = allPieces.filter(p => !p.parent_id);

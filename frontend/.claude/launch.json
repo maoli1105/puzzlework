@@ -1,0 +1,13 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "puzzlework-frontend",
+      "runtimeExecutable": ".claude/start-dev.sh",
+      "runtimeArgs": [],
+      "cwd": "/Users/mouritetsuya/Documents/puzzlework/frontend",
+      "port": 3000,
+      "autoPort": true
+    }
+  ]
+}

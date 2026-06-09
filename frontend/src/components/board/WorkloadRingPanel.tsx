@@ -2,7 +2,6 @@
 // ─ 各ワーカーをドーナツリングで可視化
 // ─ ステータス別の内訳（done / in_progress / ready / locked）
 
-import React from 'react';
 import { Piece, User } from '../../types';
 
 interface Props {

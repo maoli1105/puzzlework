@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { pieces as pieceApi, projects as projectApi } from '../../services/api';
 
 // ─── 型定義 ──────────────────────────────────────────────────────────────────

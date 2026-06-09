@@ -1,0 +1,185 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --puzzle-yellow: #FFF44F;
+  --puzzle-blue: #00BFFF;
+
+  /* ══════════════════════════════════════════════════════════════
+     PuzzleWork Design System — Workshop UI Language
+     Nintendo整理感 × BALMUDA温度感
+     ══════════════════════════════════════════════════════════════ */
+
+  /* ── Color ── */
+  --bg:          #F3F3F5;
+  --surface:     #FFFFFF;
+  --surface-sub: #F8F8FA;
+  --surface-hover: rgba(0,0,0,0.028);
+  --border:      #E4E4E8;
+  --border-sub:  #EDEDF0;
+  --text-1:      #0E0E10;
+  --text-2:      #3C3C44;
+  --text-3:      #8C8C96;
+  --text-4:      #B4B4BC;
+  --accent:      #1A1A1A;
+  --accent-warm: #B46400;
+  --accent-sub:  rgba(26,26,26,0.06);
+
+  /* ── Radius: 2px基調 (Nintendo的ほぼ四角) ── */
+  --r-xs:  1px;
+  --r-sm:  2px;
+  --r-md:  4px;
+  --r-lg:  6px;    /* 旧14px → 工房は丸くない */
+
+  /* ── Shadow: 空気のみ (BALMUDA的軽さ) ── */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.05);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
+
+  /* ── Spacing scale ── */
+  --sp-xs:  4px;
+  --sp-sm:  8px;
+  --sp-md:  16px;
+  --sp-lg:  24px;
+  --sp-xl:  40px;
+
+  --font: 'Inter', 'Outfit', 'Noto Sans JP', sans-serif;
+}
+
+/* ── Dark mode ── */
+.dark {
+  --bg:          #111114;
+  --surface:     #1A1A1E;
+  --surface-sub: #212128;
+  --surface-hover: rgba(255,255,255,0.03);
+  --border:      #2A2A30;
+  --border-sub:  #252528;
+  --text-1:      #EBEBF0;
+  --text-2:      #A0A0AA;
+  --text-3:      #5C5C66;
+  --text-4:      #3C3C44;
+  --accent:      #EBEBF0;
+  --accent-warm: #C2A86C;
+  --accent-sub:  rgba(235,235,240,0.06);
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.3);
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.35);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.5);
+  --font: 'Inter', 'Outfit', 'Noto Sans JP', sans-serif;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', 'Outfit', 'Noto Sans JP', sans-serif;
+  overflow-x: hidden;
+  background-color: #FDFDFD;
+}
+
+@layer base {
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    @apply font-display tracking-tighter;
+  }
+
+  p {
+    @apply tracking-wider;
+  }
+}
+
+.snap-container {
+  scroll-snap-type: y mandatory;
+  height: 100vh;
+  overflow-y: auto;
+  scroll-behavior: smooth;
+}
+
+.snap-section-long {
+  scroll-snap-align: start;
+  min-height: 100vh;
+  position: relative;
+}
+
+/* Balmuda-style airy glassmorphism */
+.glass {
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.bg-citrus-gradient {
+  background: linear-gradient(135deg, #FFF44F 0%, #FFD700 100%);
+}
+
+.text-gradient-blue {
+  background: linear-gradient(135deg, #00BFFF, #1e3a8a);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Custom Letter Spacing utilities for "density" with "air" */
+.tracking-tight-heavy {
+  letter-spacing: -0.05em;
+}
+
+.tracking-wide-air {
+  letter-spacing: 0.15em;
+}
+
+/* ── PieceNode hover / animations ── */
+.piece-node-root:hover {
+  filter: brightness(1.03);
+}
+
+.piece-node-root .piece-handle {
+  opacity: 0;
+  transition: opacity 0.15s, transform 0.15s;
+}
+.piece-node-root:hover .piece-handle {
+  opacity: 1 !important;
+  transform: translate(var(--handle-tx, -50%), -50%) scale(1.25) !important;
+}
+/* ジグソーモードではハンドルを完全に非表示（hover !importantを上書き） */
+.piece-node-root.jig-mode .piece-handle {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+@keyframes magnetic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(99,102,241,0.4); }
+  50%       { box-shadow: 0 0 0 8px rgba(99,102,241,0); }
+}
+@keyframes bottleneck-flash {
+  0%, 100% { opacity: 0.22; }
+  50%       { opacity: 0.55; }
+}
+@keyframes cascade-glow {
+  0%, 100% { opacity: 0.30; }
+  50%       { opacity: 0.65; }
+}
+
+@keyframes repair-dot {
+  0%, 100% { opacity: 0.25; transform: translateY(0); }
+  50%       { opacity: 0.75; transform: translateY(-2px); }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}

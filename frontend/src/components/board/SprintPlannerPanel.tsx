@@ -3,7 +3,7 @@
 // 優先度+依存関係順でピースを提示、担当割り当て、一括着手
 // ============================================================
 
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Piece, PieceStatus, Connection } from '../../types';
 import { pieces as pieceApi, ai as aiApi } from '../../services/api';
 

@@ -1,4 +1,3 @@
-import React from 'react';
 import { useViewport } from 'reactflow';
 import { RemoteCursor } from '../../types';
 

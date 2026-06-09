@@ -1,0 +1,351 @@
+/* ============================================================
+   PuzzleWork Design System — Workshop UI Language
+   Nintendo整理感 × BALMUDA温度感
+   2px radius · 薄い境界 · 余白の空気感
+   ============================================================ */
+
+:root {
+  /* ── Surface ── */
+  --bg:          #F3F3F5;
+  --surface:     #FFFFFF;
+  --surface-sub: #F8F8FA;
+  --surface-hover: rgba(0,0,0,0.028);
+
+  /* ── Border ── */
+  --border:      #E4E4E8;
+  --border-sub:  #EDEDF0;
+
+  /* ── Text ── */
+  --text-1:      #0E0E10;
+  --text-2:      #3C3C44;
+  --text-3:      #8C8C96;
+  --text-4:      #B4B4BC;
+
+  /* ── Accent ── */
+  --accent:      #1A1A1A;      /* 工房: 赤から墨へ。強調は温度で行う */
+  --accent-warm: #B46400;      /* 暖色アクセント */
+  --accent-sub:  rgba(26,26,26,0.06);
+  --accent-dark: #000000;
+
+  /* ── Status (変更なし) ── */
+  --status-locked:   #BBBBBB;
+  --status-ready:    #2EAA4E;
+  --status-progress: #0070CC;
+  --status-done:     #999999;
+
+  /* ── Radius: 2px基調 ── */
+  --r-xs:  1px;
+  --r-sm:  2px;
+  --r-md:  4px;
+  --r-lg:  6px;
+  --r-xl:  10px;
+
+  /* ── Shadow: 空気のみ ── */
+  --shadow-xs: 0 1px 2px rgba(0,0,0,0.04);
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.05);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-lg: 0 4px 16px rgba(0,0,0,0.08);
+
+  /* ── Spacing (8px grid) ── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 24px;
+  --sp-6: 32px;
+  --sp-8: 48px;
+
+  /* ── Typography ── */
+  --font:      'Inter', 'Outfit', "Noto Sans JP", -apple-system, sans-serif;
+  --font-mono: "SF Mono", "Fira Code", monospace;
+
+  --text-xs:   10px;
+  --text-sm:   12px;
+  --text-base: 14px;
+  --text-md:   16px;
+  --text-lg:   20px;
+  --text-xl:   24px;
+  --text-2xl:  32px;
+}
+
+/* ── Dark Mode ── */
+[data-theme="dark"] {
+  --bg:          #111114;
+  --surface:     #1A1A1E;
+  --surface-sub: #212128;
+  --surface-hover: rgba(255,255,255,0.03);
+  --border:      #2A2A30;
+  --border-sub:  #252528;
+  --text-1:      #EBEBF0;
+  --text-2:      #A0A0AA;
+  --text-3:      #5C5C66;
+  --text-4:      #3C3C44;
+  --accent:      #EBEBF0;
+  --accent-warm: #C2A86C;
+  --accent-sub:  rgba(235,235,240,0.06);
+  --shadow-sm: 0 1px 4px rgba(0,0,0,0.35);
+  --shadow-md: 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-lg: 0 8px 32px rgba(0,0,0,0.6);
+}
+
+/* ============================================================
+   Base reset
+   ============================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { font-size: 15px; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: var(--text-base);
+  background: var(--bg);
+  color: var(--text-1);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font);
+  font-weight: 900;
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+button {
+  font-family: var(--font);
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  outline: none;
+  transition: background 0.15s, opacity 0.15s, transform 0.1s;
+}
+button:active { transform: scale(0.97); }
+
+input, select, textarea {
+  font-family: var(--font);
+  font-size: var(--text-base);
+}
+
+/* ============================================================
+   Nintendo-style utility classes
+   ============================================================ */
+
+/* Primary red button */
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--r-xl);
+  padding: 10px 24px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s;
+}
+.btn-primary:hover  { background: var(--accent-dark); }
+.btn-primary:active { transform: scale(0.97); }
+
+/* Ghost button */
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: transparent;
+  color: var(--text-1);
+  border: 2px solid var(--border);
+  border-radius: var(--r-xl);
+  padding: 9px 22px;
+  font-size: var(--text-sm);
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s;
+}
+.btn-ghost:hover { border-color: var(--text-2); }
+
+/* Card */
+.card {
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--border);
+  padding: var(--sp-5);
+}
+
+/* ============================================================
+   Animations
+   ============================================================ */
+
+@keyframes skeleton-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.45; }
+}
+
+@keyframes magnetic-pulse {
+  0%   { filter: drop-shadow(0 0 0px var(--status-ready)); }
+  50%  { filter: drop-shadow(0 0 8px var(--status-ready)); }
+  100% { filter: drop-shadow(0 0 0px var(--status-ready)); }
+}
+
+@keyframes piece-snap {
+  0%   { transform: scale(1) rotate(0deg); }
+  25%  { transform: scale(1.04) rotate(-0.3deg); }
+  75%  { transform: scale(1.01) rotate(0deg); }
+  100% { transform: scale(1) rotate(0deg); }
+}
+
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.5; }
+}
+
+@keyframes fadeSlideIn {
+  0%   { opacity: 0; transform: translateX(-50%) translateY(-8px); }
+  100% { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+@keyframes fadeSlideUp {
+  0%   { opacity: 0; transform: translateY(10px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes bottleneck-flash {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.4; }
+}
+
+/* ============================================================
+   ReactFlow
+   ============================================================ */
+
+.react-flow__node:focus,
+.react-flow__node:focus-visible { outline: none; }
+
+.react-flow__edge:hover .react-flow__edge-path { stroke-width: 2.5; }
+
+.react-flow__handle { transition: transform 0.12s; }
+.react-flow__handle:hover { transform: scale(1.4); }
+
+.react-flow__background { background: var(--bg); }
+
+.react-flow__minimap {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+}
+
+.react-flow__controls {
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-sm);
+  overflow: hidden;
+}
+.react-flow__controls button {
+  background: var(--surface);
+  border: none;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-2);
+}
+.react-flow__controls button:hover { background: var(--surface-sub); }
+
+/* ============================================================
+   Scrollbar (subtle, Nintendo-clean)
+   ============================================================ */
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--text-3); }
+
+/* ============================================================
+   Utility
+   ============================================================ */
+
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ============================================================
+   Mobile responsive (<= 768px)
+   ============================================================ */
+
+@media (max-width: 768px) {
+  .admin-sidebar {
+    position: fixed !important;
+    bottom: 0 !important;
+    left: 0 !important;
+    right: 0 !important;
+    top: auto !important;
+    width: 100% !important;
+    min-width: 100% !important;
+    height: 56px !important;
+    flex-direction: row !important;
+    border-right: none !important;
+    border-top: 1px solid var(--border) !important;
+    z-index: 200 !important;
+    overflow-x: auto !important;
+    overflow-y: hidden !important;
+  }
+  .admin-sidebar-logo { display: none !important; }
+  .admin-sidebar-nav {
+    flex-direction: row !important;
+    padding: 0 !important;
+    overflow-x: auto !important;
+    flex: 1 !important;
+    align-items: stretch !important;
+  }
+  .admin-sidebar-nav button {
+    flex-direction: column !important;
+    gap: 2px !important;
+    padding: 6px 10px !important;
+    min-width: 56px !important;
+    height: 56px !important;
+    border-radius: 0 !important;
+    font-size: 9px !important;
+    justify-content: center !important;
+  }
+  .admin-sidebar-nav button .nav-sub { display: none !important; }
+  .admin-sidebar-user { display: none !important; }
+  .admin-main { padding-bottom: 56px !important; }
+  .admin-search-bar {
+    left: 8px !important;
+    right: 52px !important;
+    transform: none !important;
+    width: auto !important;
+  }
+  .kanban-board {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch !important;
+  }
+  .kanban-column {
+    min-width: 240px !important;
+    flex-shrink: 0 !important;
+  }
+}
+
+/* ── ページツールバー: 狭い画面でも重ならずスクロール ── */
+.page-toolbar {
+  overflow-x: auto;
+  scrollbar-width: none;   /* Firefox */
+}
+.page-toolbar::-webkit-scrollbar {
+  display: none;           /* Chrome/Safari */
+}
+.page-toolbar > * {
+  flex-shrink: 0;
+}

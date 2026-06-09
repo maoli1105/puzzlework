@@ -11,6 +11,7 @@ export interface Piece {
   value_metric: string;
   expected_impact: string;
   assignee_id: string | null;
+  assignee_name?: string | null;
   company_id: string;
   status: PieceStatus;
   priority: number;
@@ -68,8 +69,12 @@ export interface User {
   email: string;
   role: UserRole;
   company_id: string;
+  company_name?: string;
+  plan?: 'free' | 'pro' | 'enterprise';
   skill_tree: SkillTree;
   total_pieces_done: number;
+  onboarded?: boolean;
+  user_skills?: string[];
 }
 
 export interface SkillTree {
@@ -87,7 +92,8 @@ export interface BottleneckReport {
 }
 
 export interface WSEvent {
-  type: 'piece_ready' | 'piece_done' | 'bottleneck_alert' | 'skill_levelup' | 'alert' | 'auto_promoted'
+  type: 'piece_ready' | 'piece_assigned' | 'piece_done' | 'piece_status_changed'
+      | 'bottleneck_alert' | 'skill_levelup' | 'alert' | 'auto_promoted'
       | 'cursor_move' | 'cursor_leave';
   payload: Record<string, unknown>;
 }

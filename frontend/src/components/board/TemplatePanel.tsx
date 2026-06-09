@@ -49,7 +49,7 @@ export default function TemplatePanel({ open, onClose, onCreated, projects }: Pr
   async function handleSaveTemplate(projectId: string) {
     setSaving(projectId);
     try {
-      await projectApi.saveTemplate(projectId);
+      await projectApi.saveTemplate(projectId, '');
       // Reload templates
       const ts = await projectApi.listTemplates();
       setTemplates(ts as Template[]);

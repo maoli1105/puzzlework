@@ -8,14 +8,16 @@ import { notifyUser } from '../websocket/index';
 import { AuthRequest } from '../middleware/auth';
 
 export async function createPiece(req: AuthRequest, res: Response) {
-  const { title, objective, value_metric, expected_impact, assignee_id, priority, skill_tags, project_id, due_date, parent_id } = req.body;
+  const { title, objective, value_metric, expected_impact, assignee_id, priority, skill_tags, project_id, due_date, parent_id, status: reqStatus } = req.body;
   const company_id = req.user!.company_id;
+  const VALID_STATUS = ['locked', 'ready', 'in_progress'];
+  const status = VALID_STATUS.includes(reqStatus) ? reqStatus : 'locked';
 
   const { rows: [piece] } = await pool.query(
     `INSERT INTO pieces (title, objective, value_metric, expected_impact, assignee_id, company_id, priority, skill_tags, status, project_id, due_date, parent_id)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'locked', $9, $10, $11)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
      RETURNING *`,
-    [title, objective, value_metric, expected_impact, assignee_id || null, company_id, priority || 0, skill_tags || [], project_id || null, due_date || null, parent_id || null]
+    [title, objective || '', value_metric || '', expected_impact || '', assignee_id || null, company_id, priority || 0, skill_tags || [], status, project_id || null, due_date || null, parent_id || null]
   );
 
   res.status(201).json(piece);
@@ -30,15 +32,47 @@ export async function getPiece(req: AuthRequest, res: Response) {
 
 export async function listPieces(req: AuthRequest, res: Response) {
   const company_id = req.user!.company_id;
+  const userId     = req.user!.id;
+  const role       = req.user!.role;
   const { status, assignee_id, cursor, cursor_id, limit: limitQ } = req.query;
 
-  let query = 'SELECT * FROM pieces WHERE company_id = $1';
-  const params: unknown[] = [company_id];
+  // ワーカーが自分のピースを取得する場合：複数会社メンバーシップ対応
+  const isWorkerOwnPieces = role === 'worker' && assignee_id === userId;
+  let query: string;
+  let params: unknown[];
 
-  if (status) { query += ` AND status = $${params.push(status)}`; }
-  if (assignee_id) { query += ` AND assignee_id = $${params.push(assignee_id)}`; }
+  if (isWorkerOwnPieces) {
+    // 個人タスク ＋ 所属企業のピース（company_memberships 経由）を一括取得
+    query = `SELECT p.*, u.name AS assignee_name, pr.name AS project_name,
+                    c.name AS company_name
+             FROM pieces p
+             LEFT JOIN users u ON u.id = p.assignee_id
+             LEFT JOIN projects pr ON pr.id = p.project_id
+             LEFT JOIN companies c ON c.id = p.company_id
+             WHERE p.assignee_id = $1
+               AND (
+                 p.company_id IS NULL
+                 OR p.company_id IN (
+                   SELECT company_id FROM company_memberships
+                   WHERE user_id = $1 AND status = 'active'
+                 )
+               )`;
+    params = [userId];
+    if (status) { query += ` AND p.status = $${params.push(status)}`; }
+  } else {
+    query = `SELECT p.*, u.name AS assignee_name, pr.name AS project_name,
+                    c.name AS company_name
+             FROM pieces p
+             LEFT JOIN users u ON u.id = p.assignee_id
+             LEFT JOIN projects pr ON pr.id = p.project_id
+             LEFT JOIN companies c ON c.id = p.company_id
+             WHERE p.company_id = $1`;
+    params = [company_id];
+    if (status) { query += ` AND p.status = $${params.push(status)}`; }
+    if (assignee_id) { query += ` AND p.assignee_id = $${params.push(assignee_id)}`; }
+  }
 
-  query += ' ORDER BY priority DESC, created_at ASC, id ASC';
+  query += ' ORDER BY p.priority DESC, p.created_at ASC, p.id ASC';
 
   // Pagination mode: when limit param provided, return { items, hasMore, nextCursor }
   if (limitQ) {
@@ -83,16 +117,28 @@ export async function updateStatus(req: AuthRequest, res: Response) {
       [id]
     );
     await logPieceEvent(id, userId, 'status_changed', piece.status, status);
+    // ワーカーが開始したことを管理者へ通知
+    await notifyAdmins(piece.company_id, {
+      type: 'piece_status_changed',
+      payload: { piece_id: id, title: piece.title, status: 'in_progress' },
+    });
     res.json({ success: true });
     return;
   }
 
   // doneへの遷移：トリガー発火 + スキルツリー更新 + 自動昇格
   if (status === 'done' && piece.status === 'in_progress') {
-    await fireTriggersOnDone(id, userId);
+    // ステータスを done に更新
+    await pool.query(
+      `UPDATE pieces SET status = 'done', completed_at = NOW() WHERE id = $1`,
+      [id]
+    );
+    await logPieceEvent(id, userId, 'status_changed', piece.status, 'done');
+
+    await fireTriggersOnDone(id);
 
     if (piece.assignee_id) {
-      const result = await updateSkillTreeOnPieceDone(piece.assignee_id, piece.skill_tags);
+      const result = await updateSkillTreeOnPieceDone(piece.assignee_id, piece.skill_tags ?? []);
       if (result.leveled_up && result.category) {
         notifyUser(piece.assignee_id, {
           type: 'skill_levelup',
@@ -103,6 +149,15 @@ export async function updateStatus(req: AuthRequest, res: Response) {
 
     // 依存ピースの自動昇格
     await autoPromoteDependents(id, userId, piece.company_id);
+
+    // ワーカーが完了したことを管理者へ通知（担当者名を含める）
+    const { rows: [assigneeRow] } = piece.assignee_id
+      ? await pool.query('SELECT name FROM users WHERE id = $1', [piece.assignee_id])
+      : { rows: [null] };
+    await notifyAdmins(piece.company_id, {
+      type: 'piece_done',
+      payload: { piece_id: id, title: piece.title, assignee_name: assigneeRow?.name ?? null },
+    });
 
     res.json({ success: true });
     return;
@@ -141,9 +196,15 @@ export async function updatePiece(req: AuthRequest, res: Response) {
   if ('value_metric'    in req.body) { params.push(value_metric);        setClauses.push(`value_metric = $${params.length}`); }
   if ('expected_impact' in req.body) { params.push(expected_impact);     setClauses.push(`expected_impact = $${params.length}`); }
   if ('priority'        in req.body) { params.push(priority);                      setClauses.push(`priority = $${params.length}`); }
-  if ('skill_tags'      in req.body) { params.push(skill_tags);                    setClauses.push(`skill_tags = $${params.length}`); }
-  if ('progress'        in req.body) { params.push(Math.max(0, Math.min(100, Number(req.body.progress)))); setClauses.push(`progress = $${params.length}`); }
-  if ('business_impact' in req.body) { params.push(Number(req.body.business_impact) || 0);                 setClauses.push(`business_impact = $${params.length}`); }
+  if ('skill_tags'         in req.body) { params.push(skill_tags);                    setClauses.push(`skill_tags = $${params.length}`); }
+  if ('status'             in req.body) {
+    const VALID = ['locked','ready','in_progress','done'];
+    if (VALID.includes(req.body.status)) { params.push(req.body.status); setClauses.push(`status = $${params.length}`); }
+  }
+  if ('progress'           in req.body) { params.push(Math.max(0, Math.min(100, Number(req.body.progress)))); setClauses.push(`progress = $${params.length}`); }
+  if ('business_impact'    in req.body) { params.push(Number(req.body.business_impact) || 0);                 setClauses.push(`business_impact = $${params.length}`); }
+  if ('is_confidential'    in req.body) { params.push(Boolean(req.body.is_confidential));                     setClauses.push(`is_confidential = $${params.length}`); }
+  if ('confidential_until' in req.body) { params.push(req.body.confidential_until || null);                   setClauses.push(`confidential_until = $${params.length}`); }
 
   if (setClauses.length === 0) { res.status(400).json({ error: 'Nothing to update' }); return; }
 
@@ -209,12 +270,20 @@ export async function assignPiece(req: AuthRequest, res: Response) {
 
   await logPieceEvent(id, req.user!.id, 'assigned', null, assignee_id || 'unassigned');
 
-  // readyのピースなら担当者に即時通知
-  if (piece.status === 'ready' && assignee_id) {
-    notifyUser(assignee_id, {
-      type: 'piece_ready',
-      payload: { piece_id: id, message: `新しいピースが割り当てられました：「${piece.title}」` },
-    });
+  if (assignee_id) {
+    if (piece.status === 'ready') {
+      // 着手可能なピース → すぐ動ける
+      notifyUser(assignee_id, {
+        type: 'piece_ready',
+        payload: { piece_id: id, message: `新しいピースが割り当てられました：「${piece.title}」` },
+      });
+    } else if (piece.status === 'locked') {
+      // ロック中のピース → 前工程完了後に着手
+      notifyUser(assignee_id, {
+        type: 'piece_assigned',
+        payload: { piece_id: id, message: `ピースが割り当てられました：「${piece.title}」（前の工程完了後に着手可能）` },
+      });
+    }
   }
 
   res.json(piece);
@@ -355,14 +424,173 @@ export async function getVelocityInsights(req: AuthRequest, res: Response) {
   res.json({ by_person: byPerson, by_skill: bySkill, weekly_trend: weeklyTrend });
 }
 
-export async function getConnections(req: AuthRequest, res: Response) {
+/**
+ * 個人別成長トレンド — 「最近半分 vs 過去半分」の速度比較
+ * 各ワーカーのスキル別実績と成長率を返す
+ */
+export async function getVelocityGrowth(req: AuthRequest, res: Response) {
   const company_id = req.user!.company_id;
-  const { rows } = await pool.query(
-    `SELECT c.* FROM connections c
-     JOIN pieces p ON p.id = c.from_piece_id
-     WHERE p.company_id = $1`,
+
+  // ── 個人別: 全件 / 前半 / 後半 の avg_days ─────────────────────────────────
+  const { rows: growthRows } = await pool.query<{
+    id: string; name: string;
+    total_done: string;
+    avg_days_all: string | null;
+    avg_days_early: string | null;   // 時系列前半
+    avg_days_recent: string | null;  // 時系列後半
+    total_impact: string;
+  }>(
+    `WITH ranked AS (
+       SELECT
+         vl.assignee_id,
+         vl.actual_days,
+         vl.business_impact,
+         ROW_NUMBER() OVER (PARTITION BY vl.assignee_id ORDER BY vl.created_at) AS rn,
+         COUNT(*) OVER (PARTITION BY vl.assignee_id) AS cnt
+       FROM piece_velocity_log vl
+       WHERE vl.company_id = $1
+     )
+     SELECT
+       u.id, u.name,
+       COUNT(r.actual_days)::int AS total_done,
+       ROUND(AVG(r.actual_days)::numeric, 1) AS avg_days_all,
+       ROUND(AVG(CASE WHEN r.rn <= r.cnt / 2 THEN r.actual_days END)::numeric, 1) AS avg_days_early,
+       ROUND(AVG(CASE WHEN r.rn >  r.cnt / 2 THEN r.actual_days END)::numeric, 1) AS avg_days_recent,
+       COALESCE(SUM(r.business_impact), 0)::bigint AS total_impact
+     FROM users u
+     LEFT JOIN ranked r ON r.assignee_id = u.id
+     WHERE u.company_id = $1 AND u.role = 'worker'
+     GROUP BY u.id, u.name
+     ORDER BY total_done DESC`,
     [company_id]
   );
+
+  // ── 個人×スキル別速度 ────────────────────────────────────────────────────────
+  const { rows: skillRows } = await pool.query<{
+    assignee_id: string;
+    tag: string;
+    count: string;
+    avg_days: string | null;
+  }>(
+    `SELECT
+       vl.assignee_id,
+       unnest(vl.skill_tags) AS tag,
+       COUNT(*)::int AS count,
+       ROUND(AVG(vl.actual_days)::numeric, 1) AS avg_days
+     FROM piece_velocity_log vl
+     WHERE vl.company_id = $1
+     GROUP BY vl.assignee_id, tag
+     ORDER BY vl.assignee_id, count DESC`,
+    [company_id]
+  );
+
+  // ── 週次傾向 (最近12週) ──────────────────────────────────────────────────────
+  const { rows: trendRows } = await pool.query<{
+    week: string; pieces_done: string; avg_days: string | null;
+  }>(
+    `SELECT
+       TO_CHAR(DATE_TRUNC('week', created_at), 'MM/DD') AS week,
+       COUNT(*)::int AS pieces_done,
+       ROUND(AVG(actual_days)::numeric, 1) AS avg_days
+     FROM piece_velocity_log
+     WHERE company_id = $1 AND created_at > NOW() - INTERVAL '12 weeks'
+     GROUP BY DATE_TRUNC('week', created_at)
+     ORDER BY DATE_TRUNC('week', created_at)`,
+    [company_id]
+  );
+
+  // ── スキル全体ランキング ──────────────────────────────────────────────────────
+  const { rows: skillRankRows } = await pool.query<{
+    tag: string; count: string; avg_days: string | null; total_impact: string;
+  }>(
+    `SELECT
+       unnest(skill_tags) AS tag,
+       COUNT(*)::int AS count,
+       ROUND(AVG(actual_days)::numeric, 1) AS avg_days,
+       COALESCE(SUM(business_impact), 0)::bigint AS total_impact
+     FROM piece_velocity_log
+     WHERE company_id = $1
+     GROUP BY tag
+     ORDER BY count DESC`,
+    [company_id]
+  );
+
+  // skillRows を assignee_id でグルーピング
+  const skillByPerson: Record<string, { tag: string; count: number; avg_days: number | null }[]> = {};
+  for (const r of skillRows) {
+    if (!skillByPerson[r.assignee_id]) skillByPerson[r.assignee_id] = [];
+    skillByPerson[r.assignee_id].push({
+      tag: r.tag,
+      count: parseInt(r.count, 10),
+      avg_days: r.avg_days ? parseFloat(r.avg_days) : null,
+    });
+  }
+
+  const workers = growthRows.map(r => {
+    const avgAll    = r.avg_days_all    ? parseFloat(r.avg_days_all)    : null;
+    const avgEarly  = r.avg_days_early  ? parseFloat(r.avg_days_early)  : null;
+    const avgRecent = r.avg_days_recent ? parseFloat(r.avg_days_recent) : null;
+    // trend: improvement rate (positive = faster recently)
+    const trend = avgEarly && avgRecent && avgEarly > 0
+      ? Math.round(((avgEarly - avgRecent) / avgEarly) * 100)
+      : null;
+    return {
+      id:           r.id,
+      name:         r.name,
+      total_done:   parseInt(r.total_done, 10),
+      avg_days_all: avgAll,
+      avg_days_early: avgEarly,
+      avg_days_recent: avgRecent,
+      trend,          // positive = getting faster (%)
+      total_impact: parseInt(r.total_impact, 10),
+      top_skills:   (skillByPerson[r.id] ?? []).slice(0, 6),
+    };
+  });
+
+  res.json({
+    workers,
+    weekly_trend: trendRows.map(r => ({
+      week: r.week,
+      pieces_done: parseInt(r.pieces_done, 10),
+      avg_days: r.avg_days ? parseFloat(r.avg_days) : null,
+    })),
+    skill_ranking: skillRankRows.map(r => ({
+      tag:          r.tag,
+      count:        parseInt(r.count, 10),
+      avg_days:     r.avg_days ? parseFloat(r.avg_days) : null,
+      total_impact: parseInt(r.total_impact, 10),
+    })),
+  });
+}
+
+export async function getConnections(req: AuthRequest, res: Response) {
+  const userId     = req.user!.id;
+  const company_id = req.user!.company_id;
+  const role       = req.user!.role;
+
+  let rows: unknown[];
+  if (role === 'worker' || !company_id) {
+    // ワーカー: 所属全会社のピースに関連する接続を取得
+    const result = await pool.query(
+      `SELECT c.* FROM connections c
+       JOIN pieces p ON p.id = c.from_piece_id
+       WHERE p.company_id IN (
+         SELECT company_id FROM company_memberships
+         WHERE user_id = $1 AND status = 'active'
+       )`,
+      [userId]
+    );
+    rows = result.rows;
+  } else {
+    // 管理者: 自社の全接続
+    const result = await pool.query(
+      `SELECT c.* FROM connections c
+       JOIN pieces p ON p.id = c.from_piece_id
+       WHERE p.company_id = $1`,
+      [company_id]
+    );
+    rows = result.rows;
+  }
   res.json(rows);
 }
 
@@ -430,13 +658,38 @@ export async function unpublishPiece(req: AuthRequest, res: Response) {
   res.json(piece);
 }
 
-export async function getMarketplace(_req: AuthRequest, res: Response) {
+export async function getMarketplace(req: AuthRequest, res: Response) {
+  const companyId = req.user!.company_id;
+  const { q, tags } = req.query as { q?: string; tags?: string };
+  const conditions: string[] = [
+    `p.is_external = true`,
+    `p.status = 'ready'`,
+    `p.company_id != $1`,
+  ];
+  const params: unknown[] = [companyId];
+
+  if (q?.trim()) {
+    params.push(`%${q.trim()}%`);
+    conditions.push(`(p.title ILIKE $${params.length} OR p.objective ILIKE $${params.length})`);
+  }
+  if (tags?.trim()) {
+    const tagList = tags.split(',').map(t => t.trim()).filter(Boolean);
+    if (tagList.length > 0) {
+      params.push(tagList);
+      conditions.push(`p.skill_tags && $${params.length}::text[]`);
+    }
+  }
+
   const { rows } = await pool.query(
-    `SELECT p.*, c.name as company_name
+    `SELECT p.id, p.title, p.objective, p.value_metric, p.expected_impact,
+            p.skill_tags, p.reward, p.status, p.business_impact,
+            p.estimated_days, p.priority, p.due_date, p.created_at,
+            c.name as company_name
      FROM pieces p
      JOIN companies c ON c.id = p.company_id
-     WHERE p.is_external = true AND p.status = 'ready'
-     ORDER BY p.reward DESC, p.created_at DESC`
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY p.reward DESC, p.business_impact DESC, p.created_at DESC`,
+    params
   );
   res.json(rows);
 }
@@ -490,9 +743,39 @@ export async function agentCompletePiece(req: AuthRequest, res: Response) {
   if (!piece) { res.status(404).json({ error: 'Not found' }); return; }
   if (piece.status !== 'in_progress') { res.status(400).json({ error: 'Piece is not in_progress' }); return; }
 
-  await fireTriggersOnDone(id, agentId);
+  await fireTriggersOnDone(id);
 
   res.json({ success: true, piece_id: id, rating: rating || null });
+}
+
+export async function getDeps(req: AuthRequest, res: Response) {
+  try {
+    const { id } = req.params;
+    const company_id = req.user!.company_id;
+    const [upRes, downRes] = await Promise.all([
+      pool.query(
+        `SELECT p.id, p.title, p.status, c.id AS conn_id, c.type AS conn_type, u.name AS assignee_name
+         FROM connections c
+         JOIN pieces p ON p.id = c.from_piece_id
+         LEFT JOIN users u ON u.id = p.assignee_id
+         WHERE c.to_piece_id = $1 AND p.company_id = $2
+         ORDER BY p.created_at ASC`,
+        [id, company_id]
+      ),
+      pool.query(
+        `SELECT p.id, p.title, p.status, c.id AS conn_id, c.type AS conn_type, u.name AS assignee_name
+         FROM connections c
+         JOIN pieces p ON p.id = c.to_piece_id
+         LEFT JOIN users u ON u.id = p.assignee_id
+         WHERE c.from_piece_id = $1 AND p.company_id = $2
+         ORDER BY p.created_at ASC`,
+        [id, company_id]
+      ),
+    ]);
+    res.json({ upstream: upRes.rows, downstream: downRes.rows });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
 }
 
 export async function getCascadeImpact(req: AuthRequest, res: Response) {
@@ -553,6 +836,68 @@ export async function getCascadeImpact(req: AuthRequest, res: Response) {
 
   const total_impact = affected.reduce((sum, a) => sum + a.business_impact, 0);
   res.json({ root_id: id, delta_days: deltaDays, affected, total_impact });
+}
+
+export async function applyCascade(req: AuthRequest, res: Response) {
+  const { id } = req.params;
+  const { delta_days } = req.body as { delta_days: number };
+  const deltaDays = parseInt(String(delta_days)) || 0;
+  if (deltaDays === 0) { res.status(400).json({ error: 'delta_days must be non-zero' }); return; }
+
+  const company_id = req.user!.company_id;
+
+  // rootピースのdue_dateをシフト
+  await pool.query(
+    `UPDATE pieces SET due_date = due_date + ($1 * INTERVAL '1 day')
+     WHERE id = $2 AND company_id = $3 AND due_date IS NOT NULL`,
+    [deltaDays, id, company_id]
+  );
+
+  // downstream 取得（getCascadeImpact と同じロジック）
+  const { rows: pieces } = await pool.query<{ id: string; due_date: string | null; start_date: string | null }>(
+    `SELECT id, due_date, start_date FROM pieces WHERE company_id = $1`,
+    [company_id]
+  );
+  const { rows: conns } = await pool.query<{ from_piece_id: string; to_piece_id: string }>(
+    `SELECT c.from_piece_id, c.to_piece_id FROM connections c
+     JOIN pieces p ON p.id = c.from_piece_id WHERE p.company_id = $1`,
+    [company_id]
+  );
+
+  const downstream = new Map<string, string[]>();
+  for (const c of conns) {
+    if (!downstream.has(c.from_piece_id)) downstream.set(c.from_piece_id, []);
+    downstream.get(c.from_piece_id)!.push(c.to_piece_id);
+  }
+
+  const visited = new Set<string>([id]);
+  const queue = [id];
+  const affectedIds: string[] = [];
+
+  while (queue.length > 0) {
+    const cur = queue.shift()!;
+    for (const child of downstream.get(cur) ?? []) {
+      if (visited.has(child)) continue;
+      visited.add(child);
+      queue.push(child);
+      const p = pieces.find(x => x.id === child);
+      if (!p) continue;
+      affectedIds.push(child);
+    }
+  }
+
+  // 一括更新
+  if (affectedIds.length > 0) {
+    await pool.query(
+      `UPDATE pieces SET
+         due_date   = CASE WHEN due_date   IS NOT NULL THEN due_date   + ($1 * INTERVAL '1 day') ELSE NULL END,
+         start_date = CASE WHEN start_date IS NOT NULL THEN start_date + ($1 * INTERVAL '1 day') ELSE NULL END
+       WHERE id = ANY($2::uuid[]) AND company_id = $3`,
+      [deltaDays, affectedIds, company_id]
+    );
+  }
+
+  res.json({ root_id: id, delta_days: deltaDays, updated_count: affectedIds.length + 1 });
 }
 
 /**
@@ -630,11 +975,165 @@ async function logPieceEvent(
   userId: string,
   eventType: string,
   oldValue: string | null,
-  newValue: string | null
+  newValue: string | null,
+  reason: string | null = null
 ) {
   await pool.query(
-    `INSERT INTO piece_logs (piece_id, user_id, event_type, old_value, new_value)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [pieceId, userId, eventType, oldValue, newValue]
+    `INSERT INTO piece_logs (piece_id, user_id, event_type, old_value, new_value, reason)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [pieceId, userId, eventType, oldValue, newValue, reason]
   );
+}
+
+// ─── クリティカルパス分析 ────────────────────────────────────────────────────
+export async function getCriticalPath(req: AuthRequest, res: Response) {
+  try {
+  const company_id = req.user!.company_id;
+
+  if (!company_id) {
+    res.json({ pieces: [], total_duration: 0, critical_count: 0, critical_chain: [], isolated_count: 0 });
+    return;
+  }
+
+  const [piecesRes, connRes, usersRes] = await Promise.all([
+    pool.query(
+      `SELECT id, title, status, estimated_days, due_date, assignee_id,
+              priority, business_impact, skill_tags, project_id
+       FROM pieces
+       WHERE company_id = $1 AND status NOT IN ('done')
+       ORDER BY created_at ASC`,
+      [company_id]
+    ),
+    pool.query(
+      `SELECT c.from_piece_id, c.to_piece_id
+       FROM connections c
+       WHERE c.from_piece_id IN (SELECT id FROM pieces WHERE company_id = $1 AND status != 'done')
+         AND c.to_piece_id   IN (SELECT id FROM pieces WHERE company_id = $1 AND status != 'done')`,
+      [company_id]
+    ),
+    pool.query('SELECT id, name FROM users WHERE company_id = $1', [company_id]),
+  ]);
+
+  const userMap: Record<string, string> = {};
+  for (const u of usersRes.rows) userMap[u.id] = u.name;
+
+  const pieces = piecesRes.rows;
+  const conns  = connRes.rows;
+
+  // adjacency maps
+  const out: Record<string, string[]> = {};
+  const inc: Record<string, string[]> = {};
+  for (const p of pieces) { out[p.id] = []; inc[p.id] = []; }
+  for (const c of conns) {
+    out[c.from_piece_id]?.push(c.to_piece_id);
+    inc[c.to_piece_id]?.push(c.from_piece_id);
+  }
+
+  // Kahn topological sort
+  const inDeg: Record<string, number> = {};
+  for (const p of pieces) inDeg[p.id] = inc[p.id].length;
+  const queue = pieces.filter(p => inDeg[p.id] === 0).map(p => p.id);
+  const sorted: string[] = [];
+  while (queue.length) {
+    const id = queue.shift()!;
+    sorted.push(id);
+    for (const nxt of out[id] ?? []) {
+      inDeg[nxt]--;
+      if (inDeg[nxt] === 0) queue.push(nxt);
+    }
+  }
+
+  // Forward pass: Earliest Start (ES) / Earliest Finish (EF)
+  const days: Record<string, number> = {};
+  for (const p of pieces) days[p.id] = Math.max(1, p.estimated_days ?? 1);
+  const ES: Record<string, number> = {};
+  const EF: Record<string, number> = {};
+  for (const id of sorted) {
+    const preds = inc[id] ?? [];
+    ES[id] = preds.length === 0 ? 0 : Math.max(...preds.map(p => EF[p] ?? 0));
+    EF[id] = ES[id] + days[id];
+  }
+
+  const maxEF = pieces.length > 0 ? Math.max(0, ...pieces.map(p => EF[p.id] ?? 0)) : 0;
+
+  // Backward pass: Latest Start (LS) / Latest Finish (LF)
+  const LF: Record<string, number> = {};
+  const LS: Record<string, number> = {};
+  for (const id of [...sorted].reverse()) {
+    const succs = out[id] ?? [];
+    LF[id] = succs.length === 0 ? maxEF : Math.min(...succs.map(s => LS[s] ?? maxEF));
+    LS[id] = LF[id] - days[id];
+  }
+
+  // Float & critical
+  const result = pieces.map(p => ({
+    id:              p.id,
+    title:           p.title,
+    status:          p.status,
+    estimated_days:  days[p.id],
+    due_date:        p.due_date,
+    priority:        p.priority,
+    business_impact: p.business_impact,
+    skill_tags:      p.skill_tags ?? [],
+    project_id:      p.project_id,
+    assignee_id:     p.assignee_id,
+    assignee_name:   p.assignee_id ? (userMap[p.assignee_id] ?? null) : null,
+    es:  ES[p.id] ?? 0,
+    ef:  EF[p.id] ?? 0,
+    ls:  LS[p.id] ?? 0,
+    lf:  LF[p.id] ?? 0,
+    float:       (LS[p.id] ?? 0) - (ES[p.id] ?? 0),
+    is_critical: ((LS[p.id] ?? 0) - (ES[p.id] ?? 0)) === 0,
+    successors:   out[p.id] ?? [],
+    predecessors: inc[p.id] ?? [],
+  }));
+
+  // Build the longest critical chain (for display) using DP on topological order
+  const critSet = new Set(result.filter(p => p.is_critical).map(p => p.id));
+  // longestFrom[id] = longest sub-chain starting at id (memoized, O(V+E))
+  const longestFrom: Record<string, string[]> = {};
+  for (const id of [...sorted].reverse()) {
+    if (!critSet.has(id)) continue;
+    const critNexts = (out[id] ?? []).filter(n => critSet.has(n));
+    if (critNexts.length === 0) {
+      longestFrom[id] = [id];
+    } else {
+      const best = critNexts.reduce<string[]>((acc, n) => {
+        const sub = longestFrom[n] ?? [];
+        return sub.length > acc.length ? sub : acc;
+      }, []);
+      longestFrom[id] = [id, ...best];
+    }
+  }
+  const critRoots = result.filter(p => p.is_critical && !inc[p.id]?.some(id => critSet.has(id)));
+  const longestChain = critRoots.reduce<string[]>((acc, r) => {
+    const chain = longestFrom[r.id] ?? [];
+    return chain.length > acc.length ? chain : acc;
+  }, []);
+
+  res.json({
+    pieces:          result,
+    total_duration:  maxEF,
+    critical_count:  critSet.size,
+    critical_chain:  longestChain,
+    isolated_count:  pieces.filter(p => inc[p.id]?.length === 0 && out[p.id]?.length === 0).length,
+  });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: 'クリティカルパス計算に失敗しました', detail: msg });
+  }
+}
+
+
+// ── 管理者全員に通知 ─────────────────────────────────────────────────────────
+import { WSEvent } from '../types';
+async function notifyAdmins(companyId: string, event: WSEvent) {
+  if (!companyId) return;
+  const { rows: admins } = await pool.query(
+    `SELECT id FROM users WHERE company_id = $1 AND role = 'admin'`,
+    [companyId]
+  );
+  for (const admin of admins) {
+    notifyUser(admin.id, event);
+  }
 }

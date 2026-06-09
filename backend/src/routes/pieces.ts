@@ -14,12 +14,16 @@ import {
   publishPiece,
   unpublishPiece,
   getCascadeImpact,
+  applyCascade,
+  getDeps,
   getOrgHealthReport,
   getVelocityInsights,
+  getVelocityGrowth,
   getStandupReport,
   reportBlocker,
   deleteConnection,
   updateConnection,
+  getCriticalPath,
 } from '../controllers/pieceController';
 
 const router = Router();
@@ -28,10 +32,126 @@ router.use(authenticate);
 
 router.get('/', listPieces);
 router.post('/', requireAdmin, createPiece);
+
+// ── 個人タスク作成（ワーカーが自分でタスクを追加） ──────────────────
+router.post('/personal', async (req: any, res) => {
+  const userId = req.user!.id;
+  const { title, due_date, objective, recurrence_rule } = req.body;
+  if (!title?.trim()) { res.status(400).json({ error: 'title required' }); return; }
+  const { rows: [piece] } = await pool.query(
+    `INSERT INTO pieces
+       (title, objective, value_metric, expected_impact,
+        assignee_id, company_id, priority, skill_tags,
+        status, source, worker_memo, recurrence_rule)
+     VALUES ($1, $2, '', '', $3, NULL, 0, '{}', 'ready', 'personal', '', $4)
+     RETURNING *`,
+    [title.trim(), objective || '', userId, recurrence_rule || null]
+  );
+  if (due_date) {
+    await pool.query(`UPDATE pieces SET due_date = $1 WHERE id = $2`, [due_date, piece.id]);
+    piece.due_date = due_date;
+  }
+  res.status(201).json(piece);
+});
+
+// ── 個人タスク更新（ワーカーが自分のタスクのみ編集可） ──────────────────
+router.patch('/personal/:id', async (req: any, res) => {
+  const userId = req.user!.id;
+  const { id } = req.params;
+  const { title, due_date, objective, recurrence_rule,
+          is_today_focus, estimated_minutes, actual_minutes, personal_tags } = req.body;
+
+  // is_today_focus は自分のピース全体（企業ピース含む）に適用できる
+  const allowedWithoutPersonalCheck = is_today_focus !== undefined
+    && Object.keys(req.body).length === 1;
+
+  const { rows: [existing] } = await pool.query(
+    allowedWithoutPersonalCheck
+      ? `SELECT id FROM pieces WHERE id = $1 AND assignee_id = $2`
+      : `SELECT id FROM pieces WHERE id = $1 AND assignee_id = $2 AND source = 'personal'`,
+    [id, userId]
+  );
+  if (!existing) { res.status(404).json({ error: 'not found' }); return; }
+
+  const updates: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+
+  if (title !== undefined)              { updates.push(`title = $${idx++}`);              params.push(title.trim()); }
+  if (objective !== undefined)          { updates.push(`objective = $${idx++}`);          params.push(objective); }
+  if (due_date !== undefined)           { updates.push(`due_date = $${idx++}`);           params.push(due_date || null); }
+  if (recurrence_rule !== undefined)    { updates.push(`recurrence_rule = $${idx++}`);    params.push(recurrence_rule || null); }
+  if (is_today_focus !== undefined)     { updates.push(`is_today_focus = $${idx++}`);     params.push(!!is_today_focus); }
+  if (estimated_minutes !== undefined)  { updates.push(`estimated_minutes = $${idx++}`);  params.push(estimated_minutes || null); }
+  if (actual_minutes !== undefined)     { updates.push(`actual_minutes = $${idx++}`);     params.push(actual_minutes || null); }
+  if (personal_tags !== undefined)      { updates.push(`personal_tags = $${idx++}`);      params.push(personal_tags); }
+
+  if (updates.length === 0) { res.status(400).json({ error: 'no fields' }); return; }
+
+  params.push(id);
+  const { rows: [piece] } = await pool.query(
+    `UPDATE pieces SET ${updates.join(', ')} WHERE id = $${idx} RETURNING *`,
+    params
+  );
+  res.json(piece);
+});
+
+// ── 個人タスク削除（ワーカーが自分のタスクのみ削除可） ──────────────────
+router.delete('/personal/:id', async (req: any, res) => {
+  const userId = req.user!.id;
+  const { id } = req.params;
+
+  const { rowCount } = await pool.query(
+    `DELETE FROM pieces WHERE id = $1 AND assignee_id = $2 AND source = 'personal'`,
+    [id, userId]
+  );
+  if (!rowCount) { res.status(404).json({ error: 'not found' }); return; }
+  res.json({ ok: true });
+});
+
+// ── 個人タスク完了時・繰り返し次回作成 ─────────────────────────────────
+router.post('/personal/:id/complete', async (req: any, res) => {
+  const userId = req.user!.id;
+  const { id } = req.params;
+
+  const { rows: [piece] } = await pool.query(
+    `UPDATE pieces SET status = 'done', completed_at = now()
+     WHERE id = $1 AND assignee_id = $2 AND source = 'personal'
+     RETURNING *`,
+    [id, userId]
+  );
+  if (!piece) { res.status(404).json({ error: 'not found' }); return; }
+
+  // 繰り返しルールがあれば次回分を自動生成
+  if (piece.recurrence_rule) {
+    const nextDue = piece.due_date ? (() => {
+      const d = new Date(piece.due_date);
+      if (piece.recurrence_rule === 'daily')   d.setDate(d.getDate() + 1);
+      if (piece.recurrence_rule === 'weekly')  d.setDate(d.getDate() + 7);
+      if (piece.recurrence_rule === 'monthly') d.setMonth(d.getMonth() + 1);
+      return d.toISOString();
+    })() : null;
+
+    const { rows: [next] } = await pool.query(
+      `INSERT INTO pieces
+         (title, objective, assignee_id, company_id, status, source,
+          recurrence_rule, due_date, priority, skill_tags,
+          value_metric, expected_impact, worker_memo)
+       VALUES ($1, $2, $3, NULL, 'ready', 'personal', $4, $5, $6, '{}', '', '', '')
+       RETURNING *`,
+      [piece.title, piece.objective, userId, piece.recurrence_rule, nextDue, piece.priority]
+    );
+    res.json({ completed: piece, next });
+  } else {
+    res.json({ completed: piece, next: null });
+  }
+});
 router.get('/bottlenecks', requireAdmin, getBottlenecks);
 router.get('/org-health', requireAdmin, getOrgHealthReport);
 router.get('/velocity', requireAdmin, getVelocityInsights);
+router.get('/velocity/growth', requireAdmin, getVelocityGrowth);
 router.get('/standup', requireAdmin, getStandupReport);
+router.get('/critical-path', requireAdmin, getCriticalPath);
 router.get('/search', authenticate, async (req, res) => {
   const { q } = req.query;
   if (!q || (q as string).trim().length < 2) { res.json([]); return; }
@@ -90,6 +210,169 @@ router.post('/bulk', requireAdmin, async (req, res) => {
     created.push(piece);
   }
   res.status(201).json({ created: created.length, pieces: created });
+});
+
+// ── ワーカーポートフォリオ GET /pieces/portfolio ─────────────────────────
+// 本人向け：機密ピースも全部表示（詳細あり）、機密フラグを付与
+router.get('/portfolio', async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  try {
+    const now = new Date().toISOString();
+    const { rows } = await pool.query(
+      `SELECT
+         p.id,
+         p.title,
+         p.objective,
+         p.skill_tags,
+         p.personal_tags,
+         p.source,
+         p.status,
+         p.completed_at,
+         p.estimated_minutes,
+         p.actual_minutes,
+         p.business_impact,
+         p.company_id,
+         p.is_confidential,
+         p.confidential_until,
+         -- 現時点で機密中かどうか（期限切れなら公開扱い）
+         CASE
+           WHEN p.is_confidential AND (p.confidential_until IS NULL OR p.confidential_until > $2)
+           THEN true ELSE false
+         END AS currently_confidential,
+         c.name AS company_name
+       FROM pieces p
+       LEFT JOIN companies c ON c.id = p.company_id
+       WHERE p.assignee_id = $1
+         AND p.status = 'done'
+         AND p.completed_at IS NOT NULL
+         AND (p.source IS NULL OR p.source != 'personal')
+       ORDER BY p.completed_at DESC`,
+      [userId, now]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('portfolio error', err);
+    res.status(500).json({ error: 'server error' });
+  }
+});
+
+// ── ワーカー個人統計 GET /pieces/my-stats ─────────────────────────────────
+router.get('/my-stats', async (req, res) => {
+  const userId = (req as any).user?.id;
+  if (!userId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  try {
+    const now = new Date();
+    const monthStart      = new Date(now.getFullYear(), now.getMonth(), 1).toISOString();
+    const lastMonthStart  = new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString();
+    const thirtyDaysAgo   = new Date(now.getTime() - 30 * 86400000).toISOString();
+    const twelveWeeksAgo  = new Date(now.getTime() - 84 * 86400000).toISOString();
+
+    const [summaryRes, dailyRes, upcomingRes, skillRes, weeklyRes, timeRes, tagRes, companyRes] = await Promise.all([
+      // 今月・先月・進行中・着手可・期限超過
+      pool.query(
+        `SELECT
+           COUNT(*) FILTER (WHERE status = 'done' AND completed_at >= $1)                        AS done_this_month,
+           COUNT(*) FILTER (WHERE status = 'done' AND completed_at >= $2 AND completed_at < $1)  AS done_last_month,
+           COUNT(*) FILTER (WHERE status = 'in_progress')                                        AS in_progress_count,
+           COUNT(*) FILTER (WHERE status = 'ready')                                              AS ready_count,
+           COUNT(*) FILTER (WHERE status NOT IN ('done') AND due_date < NOW())                   AS overdue_count,
+           ROUND(AVG(EXTRACT(EPOCH FROM (completed_at - started_at))/86400)
+             FILTER (WHERE status = 'done' AND completed_at IS NOT NULL AND started_at IS NOT NULL), 1) AS avg_days,
+           COALESCE(SUM(business_impact) FILTER (WHERE status = 'done' AND completed_at >= $1), 0) AS impact_this_month,
+           COALESCE(SUM(actual_minutes)  FILTER (WHERE status = 'done' AND completed_at >= $1), 0) AS minutes_this_month
+         FROM pieces WHERE assignee_id = $3`,
+        [monthStart, lastMonthStart, userId]
+      ),
+      // 過去30日の日別完了数
+      pool.query(
+        `SELECT DATE(completed_at) AS date, COUNT(*) AS count
+         FROM pieces
+         WHERE assignee_id = $1 AND status = 'done' AND completed_at >= $2
+         GROUP BY DATE(completed_at) ORDER BY date ASC`,
+        [userId, thirtyDaysAgo]
+      ),
+      // 直近の期限ピース（完了以外）
+      pool.query(
+        `SELECT id, title, status, due_date, business_impact, priority, source
+         FROM pieces
+         WHERE assignee_id = $1 AND status NOT IN ('done') AND due_date IS NOT NULL
+         ORDER BY due_date ASC LIMIT 10`,
+        [userId]
+      ),
+      // 企業スキルタグ別完了数（全期間）
+      pool.query(
+        `SELECT UNNEST(skill_tags) AS tag, COUNT(*) AS count
+         FROM pieces
+         WHERE assignee_id = $1 AND status = 'done' AND array_length(skill_tags, 1) > 0
+         GROUP BY tag ORDER BY count DESC LIMIT 12`,
+        [userId]
+      ),
+      // 週次完了サマリー（過去12週）
+      pool.query(
+        `SELECT
+           DATE_TRUNC('week', completed_at) AS week_start,
+           COUNT(*)                          AS count,
+           COALESCE(SUM(actual_minutes), 0)  AS minutes,
+           COUNT(*) FILTER (WHERE source = 'personal') AS personal_count,
+           COUNT(*) FILTER (WHERE source != 'personal' OR source IS NULL) AS company_count
+         FROM pieces
+         WHERE assignee_id = $1 AND status = 'done' AND completed_at >= $2
+         GROUP BY week_start ORDER BY week_start ASC`,
+        [userId, twelveWeeksAgo]
+      ),
+      // 今月の合計作業時間（見積 vs 実績）
+      pool.query(
+        `SELECT
+           COALESCE(SUM(estimated_minutes), 0) AS est_total,
+           COALESCE(SUM(actual_minutes), 0)    AS act_total,
+           COUNT(*) FILTER (WHERE actual_minutes IS NOT NULL) AS timed_count
+         FROM pieces
+         WHERE assignee_id = $1 AND status = 'done' AND completed_at >= $2`,
+        [userId, monthStart]
+      ),
+      // 個人タグ別完了数（全期間）
+      pool.query(
+        `SELECT UNNEST(personal_tags) AS tag, COUNT(*) AS count,
+                COALESCE(SUM(actual_minutes), 0) AS minutes
+         FROM pieces
+         WHERE assignee_id = $1 AND status = 'done'
+           AND array_length(personal_tags, 1) > 0
+         GROUP BY tag ORDER BY count DESC LIMIT 12`,
+        [userId]
+      ),
+      // 企業別完了数（全期間）
+      pool.query(
+        `SELECT c.name AS company_name, COUNT(*) AS count,
+                COALESCE(SUM(p.actual_minutes), 0) AS minutes
+         FROM pieces p
+         LEFT JOIN companies c ON c.id = p.company_id
+         WHERE p.assignee_id = $1 AND p.status = 'done'
+         GROUP BY c.name ORDER BY count DESC LIMIT 8`,
+        [userId]
+      ),
+    ]);
+
+    const s = summaryRes.rows[0];
+    const t = timeRes.rows[0];
+    res.json({
+      done_this_month:    s.done_this_month,
+      done_last_month:    s.done_last_month,
+      in_progress_count:  s.in_progress_count,
+      ready_count:        s.ready_count,
+      overdue_count:      s.overdue_count,
+      avg_days:           s.avg_days,
+      impact_this_month:  s.impact_this_month,
+      minutes_this_month: s.minutes_this_month,
+      daily_done:         dailyRes.rows,
+      upcoming:           upcomingRes.rows,
+      skill_breakdown:    skillRes.rows,
+      weekly_summary:     weeklyRes.rows,
+      time_summary:       { est_total: t.est_total, act_total: t.act_total, timed_count: t.timed_count },
+      personal_tag_breakdown: tagRes.rows,
+      company_breakdown:  companyRes.rows,
+    });
+  } catch (e) { res.status(500).json({ error: String(e) }); }
 });
 
 router.get('/connections', getConnections);
@@ -173,6 +456,192 @@ router.get('/:id/logs', authenticate, async (req, res) => {
   res.json(rows);
 });
 
+// Narrative Projection — piece_logs を集約して「なぜこうなったか」を返す
+router.get('/:id/narrative', authenticate, async (req, res) => {
+  const { id } = req.params;
+
+  const { rows: [piece] } = await pool.query(
+    `SELECT p.*, u.name as assignee_name
+     FROM pieces p LEFT JOIN users u ON u.id = p.assignee_id
+     WHERE p.id = $1`,
+    [id]
+  );
+  if (!piece) { res.status(404).json({ error: 'Not found' }); return; }
+
+  const { rows: logs } = await pool.query(
+    `SELECT pl.id, pl.event_type, pl.old_value, pl.new_value, pl.reason, pl.created_at,
+            u.name as user_name
+     FROM piece_logs pl LEFT JOIN users u ON u.id = pl.user_id
+     WHERE pl.piece_id = $1 ORDER BY pl.created_at ASC`,
+    [id]
+  );
+
+  const { rows: downstream } = await pool.query(
+    `SELECT p.id, p.status FROM connections c JOIN pieces p ON p.id = c.to_piece_id
+     WHERE c.from_piece_id = $1`,
+    [id]
+  );
+
+  // ── Events ────────────────────────────────────────────────────────────────
+  const VALID_KINDS = new Set([
+    'status_changed', 'assigned', 'connected', 'blocker_reported',
+    'field_updated', 'auto_promoted', 'published', 'marketplace_accepted',
+  ]);
+  const events = logs.map((l: {
+    id: string; event_type: string; old_value: string | null; new_value: string | null;
+    reason: string | null; created_at: string; user_name: string | null;
+  }) => {
+    const kind = l.event_type.startsWith('field_updated') ? 'field_updated'
+      : VALID_KINDS.has(l.event_type) ? l.event_type
+      : 'field_updated';
+    return { id: l.id, kind, actorName: l.user_name ?? null,
+             from: l.old_value ?? null, to: l.new_value ?? null,
+             reason: l.reason ?? null, timestamp: l.created_at };
+  });
+
+  // ── Summary helpers ───────────────────────────────────────────────────────
+  const now = Date.now();
+  function daysAgo(iso: string): string {
+    const d = Math.floor((now - new Date(iso).getTime()) / 86_400_000);
+    return d === 0 ? '今日' : d === 1 ? '昨日' : `${d}日前`;
+  }
+
+  // headline
+  const rev = [...logs].reverse();
+  const lastDone    = rev.find((l: { event_type: string; new_value: string }) => l.event_type === 'status_changed' && l.new_value === 'done');
+  const lastStarted = rev.find((l: { event_type: string; new_value: string }) => l.event_type === 'status_changed' && l.new_value === 'in_progress');
+  const lastAssign  = rev.find((l: { event_type: string }) => l.event_type === 'assigned');
+
+  let headline = '';
+  if (lastDone) {
+    headline = `${(lastDone as { user_name?: string }).user_name ?? '誰か'}が${daysAgo((lastDone as { created_at: string }).created_at)}に完了させた`;
+  } else if (lastStarted) {
+    const actor = (lastStarted as { user_name?: string }).user_name ?? piece.assignee_name ?? '誰か';
+    if (lastAssign && (lastAssign as { created_at: string }).created_at < (lastStarted as { created_at: string }).created_at) {
+      headline = `${(lastAssign as { user_name?: string }).user_name ?? actor}が${daysAgo((lastAssign as { created_at: string }).created_at)}に引き取り、${daysAgo((lastStarted as { created_at: string }).created_at)}に着手`;
+    } else {
+      headline = `${actor}が${daysAgo((lastStarted as { created_at: string }).created_at)}に着手中`;
+    }
+  } else if (piece.assignee_name) {
+    headline = `${piece.assignee_name}に割り当てられている（未着手）`;
+  } else if (piece.status === 'locked') {
+    headline = 'ブロックされており、着手できない状態';
+  } else {
+    headline = '未割当・未着手';
+  }
+
+  // openIssues
+  const openIssues: string[] = [];
+  const lockedDown = (downstream as { status: string }[]).filter(d => d.status === 'locked').length;
+  if (lockedDown > 0) openIssues.push(`下流${lockedDown}枚がlocked`);
+  if (piece.status === 'locked') openIssues.push('このピース自体がブロックされている');
+  const lastBlocker = rev.find((l: { event_type: string }) => l.event_type === 'blocker_reported');
+  if (lastBlocker) openIssues.push(`ブロッカーが${daysAgo((lastBlocker as { created_at: string }).created_at)}に報告されている`);
+  if (piece.status === 'in_progress' && piece.started_at) {
+    const staleDays = Math.floor((now - new Date(piece.started_at).getTime()) / 86_400_000);
+    if (staleDays > 14) openIssues.push(`${staleDays}日間着手中で完了していない`);
+  }
+
+  // patterns: ステータスの往復を検出
+  const patterns: string[] = [];
+  const statusChanges = logs.filter((l: { event_type: string }) => l.event_type === 'status_changed') as { new_value: string; created_at: string }[];
+  let cycleCount = 0;
+  let prev = '';
+  for (const sc of statusChanges) {
+    if (prev === 'in_progress' && sc.new_value === 'locked') cycleCount++;
+    prev = sc.new_value;
+  }
+  if (cycleCount >= 2) patterns.push(`locked → in_progress を${cycleCount + 1}回繰り返している`);
+
+  const reassignCount = logs.filter((l: { event_type: string }) => l.event_type === 'assigned').length;
+  if (reassignCount >= 3) patterns.push(`担当者が${reassignCount}回変更されている`);
+
+  // momentum: 仕事の勢い
+  type Momentum = 'forward' | 'blocked' | 'cycling' | 'idle';
+  let momentum: Momentum;
+  const lastLog = logs.length > 0 ? logs[logs.length - 1] as { event_type: string; new_value: string; created_at: string } : null;
+  const hoursSinceLast = lastLog
+    ? (now - new Date(lastLog.created_at).getTime()) / 3_600_000
+    : Infinity;
+  if (cycleCount >= 2) {
+    momentum = 'cycling';
+  } else if (piece.status === 'locked' || (lastLog && lastLog.event_type === 'blocker_reported')) {
+    momentum = 'blocked';
+  } else if (lastLog && ['status_changed','assigned','auto_promoted'].includes(lastLog.event_type) && hoursSinceLast < 48) {
+    momentum = 'forward';
+  } else {
+    momentum = 'idle';
+  }
+
+  // ── Residue integration ──────────────────────────────────────────────────
+  const { rows: residueRows } = await pool.query(
+    `SELECT id, piece_id, author_id, type, body, created_at
+     FROM residue_notes WHERE piece_id = $1 ORDER BY created_at DESC LIMIT 10`,
+    [id]
+  );
+  const residue = (residueRows as { type: string; body: string; created_at: string }[]).map(r => ({
+    type:       r.type,
+    body:       r.body,
+    created_at: r.created_at,
+  }));
+
+  // residue からの追加 openIssues
+  const residueCautions = residue.filter(r => r.type === 'caution' || r.type === 'blocker' || r.type === 'uncertainty');
+  for (const rc of residueCautions.slice(0, 2)) {
+    openIssues.push(`[文脈] ${rc.body}`);
+  }
+
+  // handoff メモがあれば patterns に追加
+  const handoffNotes = residue.filter(r => r.type === 'handoff');
+  if (handoffNotes.length > 0) {
+    patterns.push(`引き継ぎメモが${handoffNotes.length}件記録されている`);
+  }
+
+  res.json({ events, summary: { headline, openIssues, patterns, momentum }, residue });
+});
+
+// Residue Notes — GET /pieces/:id/residue
+router.get('/:id/residue', authenticate, async (req, res) => {
+  const { id } = req.params;
+  const { rows } = await pool.query(
+    `SELECT rn.id, rn.piece_id, rn.author_id, rn.type, rn.body, rn.created_at,
+            u.name as author_name
+     FROM residue_notes rn LEFT JOIN users u ON u.id = rn.author_id
+     WHERE rn.piece_id = $1
+     ORDER BY rn.created_at DESC`,
+    [id]
+  );
+  res.json(rows);
+});
+
+// Residue Notes — POST /pieces/:id/residue
+router.post('/:id/residue', authenticate, async (req, res) => {
+  const { id } = req.params;
+  const userId = (req as { user?: { id: string } }).user?.id;
+  const { type, body } = req.body as { type: string; body: string };
+
+  const validTypes = ['blocker', 'insight', 'caution', 'handoff', 'uncertainty', 'decision'];
+  if (!validTypes.includes(type)) {
+    res.status(400).json({ error: 'type が不正です' }); return;
+  }
+  const trimmed = (body ?? '').trim();
+  if (trimmed.length === 0 || trimmed.length > 140) {
+    res.status(400).json({ error: '本文は1〜140文字で入力してください' }); return;
+  }
+
+  // piece が存在することを確認
+  const { rows: [piece] } = await pool.query('SELECT id FROM pieces WHERE id = $1', [id]);
+  if (!piece) { res.status(404).json({ error: 'Not found' }); return; }
+
+  const { rows: [note] } = await pool.query(
+    `INSERT INTO residue_notes (piece_id, author_id, type, body)
+     VALUES ($1, $2, $3, $4)
+     RETURNING id, piece_id, author_id, type, body, created_at`,
+    [id, userId ?? null, type, trimmed]
+  );
+  res.status(201).json(note);
+});
+
 router.patch('/:id', requireAdmin, updatePiece);
 router.delete('/:id', requireAdmin, async (req, res) => {
   const { id } = req.params;
@@ -199,6 +668,8 @@ router.post('/:id/connect', requireAdmin, connectPiece);
 router.patch('/:id/publish', requireAdmin, publishPiece);
 router.patch('/:id/unpublish', requireAdmin, unpublishPiece);
 router.get('/:id/cascade-impact', getCascadeImpact);
+router.post('/:id/cascade-apply', requireAdmin, applyCascade);
+router.get('/:id/deps', authenticate, getDeps);
 router.post('/:id/report-blocker', reportBlocker);
 
 // Comments

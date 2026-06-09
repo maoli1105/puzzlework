@@ -88,7 +88,8 @@ export interface BottleneckReport {
 
 // WebSocket イベント型
 export interface WSEvent {
-  type: 'piece_ready' | 'piece_done' | 'bottleneck_alert' | 'skill_levelup' | 'alert' | 'auto_promoted'
+  type: 'piece_ready' | 'piece_done' | 'piece_assigned' | 'piece_status_changed'
+      | 'bottleneck_alert' | 'skill_levelup' | 'alert' | 'auto_promoted'
       | 'cursor_move' | 'cursor_leave';
   payload: Record<string, unknown>;
 }
